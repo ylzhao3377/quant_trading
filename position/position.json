@@ -1,0 +1,44 @@
+{
+  "META": [
+    { "date": "2024-04-24 05:00", "price": 414.97, "shares": 10, "action": "buy" },
+    { "date": "2025-02-27 16:00", "price": 668.73, "shares": 10, "action": "buy" },
+    { "date": "2025-03-04 15:00", "price": 632.28, "shares": 10, "action": "buy" },
+    { "date": "2025-03-09 15:00", "price": 620, "shares": 10, "action": "buy" }
+  ],
+  "NVDA": [
+    { "date": "2024-06-24 05:00", "price": 116.82, "shares": 60, "action": "buy" },
+    { "date": "2024-06-27 16:00", "price": 119.92, "shares": 15, "action": "buy" },
+    { "date": "2025-02-27 15:00", "price": 126.11, "shares": 30, "action": "buy" }
+  ],
+  "TSLA": [
+    { "date": "2025-02-11 05:00", "price": 327.52, "shares": 20, "action": "buy" },
+    { "date": "2025-02-26 16:00", "price": 293.83, "shares": 10, "action": "buy" }
+  ],
+  "TQQQ": [
+    { "date": "2025-03-06 15:00", "price": 66.61, "shares": 20, "action": "buy" },
+    { "date": "2025-03-10 15:00", "price": 61.26, "shares": 10, "action": "buy" }
+  ],
+  "AAPL": [
+    { "date": "2023-01-18 05:00", "price": 182.13, "shares": 13, "action": "buy" }
+  ],
+  "GOOGL": [
+    { "date": "2024-03-29 05:00", "price": 132.60, "shares": 30, "action": "buy" },
+    { "date": "2025-02-26 16:00", "price": 172.97, "shares": 20, "action": "buy" }
+  ],
+  "AMD": [
+    { "date": "2024-10-30 05:00", "price": 148.12, "shares": 40, "action": "buy" },
+    { "date": "2024-12-03 16:00", "price": 141.86, "shares": 5, "action": "buy" }
+  ],
+  "VOO": [
+    { "date": "2024-10-31 16:00", "price": 510.72, "shares": 5, "action": "buy" }
+  ],
+  "SPY": [
+    { "date": "2024-12-18 15:00", "price": 586.60, "shares": 20, "action": "buy" }
+  ],
+  "VRT": [
+    { "date": "2025-01-27 05:00", "price": 104.95, "shares": 10, "action": "buy" }
+  ],
+  "AVGO": [
+    { "date": "2025-01-27 16:00", "price": 204.73, "shares": 10, "action": "buy" }
+  ]
+}

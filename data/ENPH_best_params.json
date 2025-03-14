@@ -1,0 +1,1 @@
+{"base_position_pct": 1, "max_position_pct": 1, "atr_multiplier": 15, "trailing_stop_pct": 0.92, "breakout_buffer": 0.01, "add_position_pct": 0.2, "partial_profit_threshold": 0.05, "partial_sell_ratio": 0.3}
