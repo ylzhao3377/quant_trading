@@ -342,7 +342,6 @@ if __name__ == "__main__":
 
     # 读取数据
     df = fetch_stock_data(ticker, args.start_date, args.end_date, "hour")
-    df.to_csv(f"{ticker}_stock.csv")
     if option == "train":
         # 参数网格
         param_grid = {

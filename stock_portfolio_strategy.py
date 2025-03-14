@@ -2,13 +2,45 @@ import pandas as pd
 import numpy as np
 import json
 import os
+import boto3
 from itertools import product
 from polygon import RESTClient
 from datetime import datetime, timedelta
 import argparse
+import smtplib
+from email.mime.text import MIMEText
 
 
 os.environ["POLYGON_API_KEY"] = "0Fp6qkxgz6QugnvLPiR6d9cEMpK3hxFF"
+
+
+def send_email(subject, message, from_addr, to_addrs, smtp_server, smtp_port, smtp_user, smtp_password):
+    """
+    发送电子邮件通知
+    参数:
+      - subject: 邮件主题
+      - message: 邮件正文
+      - from_addr: 发件人邮箱
+      - to_addrs: 收件人邮箱列表
+      - smtp_server: SMTP服务器地址
+      - smtp_port: SMTP服务器端口（通常587）
+      - smtp_user: SMTP用户名
+      - smtp_password: SMTP密码
+    """
+    msg = MIMEText(message, 'plain', 'utf-8')
+    msg['Subject'] = subject
+    msg['From'] = from_addr
+    msg['To'] = ", ".join(to_addrs)
+
+    try:
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()  # 启用TLS安全传输
+            server.login(smtp_user, smtp_password)
+            server.sendmail(from_addr, to_addrs, msg.as_string())
+        print("邮件发送成功！")
+    except Exception as e:
+        print("邮件发送失败：", e)
+
 
 
 def fetch_stock_data(ticker: str, last_n_days: int, timespan: str):
@@ -78,16 +110,10 @@ def get_signals(row, prev_ma200):
     trend_down = (row['EMA50'] < row['EMA100']) and (row['MA200'] < prev_ma200) and (row['MACD'] < row['Signal']) and (row['RSI'] < 50)
     return trend_up, trend_down
 
+
 def backtest_portfolio(stock_data, initial_balance=10000):
     """
     对多只股票执行回测，返回快照日志（trade_df）、详细交易日志（detailed_trade_df）和 summary。
-    参数：
-      - stock_data: dict，键为股票代码，值为对应DataFrame（含 'datetime','open','high','low','close'）
-      - initial_balance: 初始资金
-    返回：
-      - trade_df: 快照日志 DataFrame
-      - detailed_trade_df: 详细交易日志 DataFrame（记录每笔实际交易，不含最终 HOLD_FINAL）
-      - summary: dict，总结信息
     """
     n = len(stock_data)
     balance = initial_balance
@@ -106,23 +132,38 @@ def backtest_portfolio(stock_data, initial_balance=10000):
                 best_params = json.load(f)
         else:
             best_params = {"partial_profit_threshold": 0.05, "trailing_stop_pct": 0.90}
-        portfolio[stock] = {
-            'df': df,
-            'in_position': False,
-            'position': 0,
-            'entry_price': 0,
-            'max_profit_price': 0,
-            'partial_sell_count': 0,
-            'last_partial_sell_price': None,
-            'entered_before': False,
-            'has_experienced_down': False,
-            'realized_profit': 0,
-            'params': best_params
-        }
+        if stock == "SQQQ":
+            # 对冲品种单独处理
+            portfolio[stock] = {
+                'df': df,
+                'in_position': False,
+                'position': 0,
+                'entry_price': 0,
+                'max_profit_price': 0,
+                'realized_profit': 0,
+                'params': best_params,
+                'hedge': True
+            }
+        else:
+            portfolio[stock] = {
+                'df': df,
+                'in_position': False,
+                'position': 0,
+                'entry_price': 0,
+                'max_profit_price': 0,
+                'partial_sell_count': 0,
+                'last_partial_sell_price': None,
+                'entered_before': False,
+                'has_experienced_down': False,
+                'realized_profit': 0,
+                'params': best_params,
+                'hedge': False
+            }
 
     def calc_total_equity(time_idx):
         total_val = balance
         for stock, state in portfolio.items():
+            # 计算时包含所有品种（含对冲品种）
             df = state['df']
             if time_idx < len(df):
                 total_val += state['position'] * df.iloc[time_idx]['close']
@@ -140,11 +181,14 @@ def backtest_portfolio(stock_data, initial_balance=10000):
         current_day = current_dt.date()
         actions_this_step = []
         reasons_this_step = []
-        # 卖出操作
+
+        # 卖出操作（跳过对冲品种 SQQQ）
         for stock, state in portfolio.items():
+            if state.get('hedge', False):
+                continue  # 对冲品种不参与常规逻辑
             df = state['df']
             row = df.iloc[i]
-            prev_ma200 = df.iloc[i-1]['MA200'] if i > 0 else row['MA200']
+            prev_ma200 = df.iloc[i - 1]['MA200'] if i > 0 else row['MA200']
             trend_up, trend_down = get_signals(row, prev_ma200)
             if state['in_position']:
                 state['max_profit_price'] = max(state['max_profit_price'], row['close'])
@@ -179,7 +223,8 @@ def backtest_portfolio(stock_data, initial_balance=10000):
 
                 # 部分止盈
                 if (state['last_partial_sell_price'] is not None and
-                    row['close'] >= state['last_partial_sell_price'] * (1 + state['params']['partial_profit_threshold'])):
+                        row['close'] >= state['last_partial_sell_price'] * (
+                                1 + state['params']['partial_profit_threshold'])):
                     if state['partial_sell_count'] < 4:
                         partial_shares = int(state['position'] * 0.25)
                         if partial_shares > 0:
@@ -265,12 +310,14 @@ def backtest_portfolio(stock_data, initial_balance=10000):
                 if not state['in_position'] and trend_down:
                     state['has_experienced_down'] = True
 
-        # 买入操作：对于未持仓股票
+        # 买入操作（跳过对冲品种 SQQQ）
         eligible_stocks = []
         for stock, state in portfolio.items():
+            if state.get('hedge', False):
+                continue
             df = state['df']
             row = df.iloc[i]
-            prev_ma200 = df.iloc[i-1]['MA200'] if i > 0 else row['MA200']
+            prev_ma200 = df.iloc[i - 1]['MA200'] if i > 0 else row['MA200']
             trend_up, _ = get_signals(row, prev_ma200)
             if not state['in_position']:
                 if not state['entered_before']:
@@ -320,12 +367,84 @@ def backtest_portfolio(stock_data, initial_balance=10000):
                     actions_this_step.append(f"{stock}: BUY")
                     reasons_this_step.append("Buy signal triggered")
 
+        # ===== 新增 SQQQ 对冲逻辑 =====
+        # 遍历所有非对冲品种，判断是否全部出现下跌趋势
+        non_hedge_all_down = True
+        non_hedge_any_up = False
+        for stock, state in portfolio.items():
+            if state.get("hedge", False):
+                continue
+            df = state['df']
+            row = df.iloc[i]
+            prev_ma200 = df.iloc[i - 1]['MA200'] if i > 0 else row['MA200']
+            trend_up, trend_down = get_signals(row, prev_ma200)
+            if trend_up:
+                non_hedge_any_up = True
+            if not trend_down:
+                non_hedge_all_down = False
+
+        hedge_state = portfolio["SQQQ"]
+        sqqq_price = hedge_state['df'].iloc[i]['close']
+        if non_hedge_all_down and not non_hedge_any_up:
+            # 若所有非对冲品种均呈下跌趋势，且当前未持有 SQQQ，则用剩余资金50%买入对冲
+            if not hedge_state['in_position']:
+                allocated_amount = balance * 0.5
+                shares = int(allocated_amount / sqqq_price)
+                if shares > 0:
+                    hedge_state['in_position'] = True
+                    hedge_state['position'] = shares
+                    hedge_state['entry_price'] = sqqq_price
+                    hedge_state['max_profit_price'] = sqqq_price
+                    balance -= shares * sqqq_price
+                    total_equity = calc_total_equity(i)
+                    overall_profit = total_equity - initial_balance
+                    overall_trade_log.append({
+                        'Date': hedge_state['df'].iloc[i]['datetime'],
+                        'Stock': "SQQQ",
+                        'Action': 'HEDGE_BUY',
+                        'Price': sqqq_price,
+                        'Shares': shares,
+                        'Profit': 0,
+                        'Total_Equity': total_equity,
+                        'Stock_Profit': 0,
+                        'All_Profit': overall_profit,
+                        'Reason': 'All non-hedge stocks trending down; hedge activated with 50% cash'
+                    })
+                    actions_this_step.append("SQQQ: BUY (HEDGE)")
+                    reasons_this_step.append("All non-hedge stocks trending down; hedge activated")
+        elif non_hedge_any_up:
+            # 若任一非对冲品种出现上升趋势，且持有 SQQQ，则全部卖出 SQQQ
+            if hedge_state['in_position']:
+                trade_profit = (sqqq_price - hedge_state['entry_price']) * hedge_state['position']
+                hedge_state['realized_profit'] += trade_profit
+                balance += hedge_state['position'] * sqqq_price
+                total_equity = calc_total_equity(i)
+                overall_profit = total_equity - initial_balance
+                overall_trade_log.append({
+                    'Date': hedge_state['df'].iloc[i]['datetime'],
+                    'Stock': "SQQQ",
+                    'Action': 'HEDGE_SELL',
+                    'Price': sqqq_price,
+                    'Shares': hedge_state['position'],
+                    'Profit': trade_profit,
+                    'Total_Equity': total_equity,
+                    'Stock_Profit': trade_profit,
+                    'All_Profit': overall_profit,
+                    'Reason': 'At least one non-hedge stock trending up; hedge deactivated'
+                })
+                actions_this_step.append("SQQQ: SELL_ALL (HEDGE)")
+                reasons_this_step.append("At least one non-hedge stock trending up; hedge deactivated")
+                hedge_state['position'] = 0
+                hedge_state['in_position'] = False
+                hedge_state['entry_price'] = 0
+                hedge_state['max_profit_price'] = 0
+
         # 判断是否为日末快照（最后一根或下一时点日期不同）
         record_snapshot = False
         if i == min_length - 1:
             record_snapshot = True
         else:
-            next_dt = pd.to_datetime(portfolio[list(portfolio.keys())[0]]['df'].iloc[i+1]['datetime'])
+            next_dt = pd.to_datetime(portfolio[list(portfolio.keys())[0]]['df'].iloc[i + 1]['datetime'])
             record_snapshot = (next_dt.date() != current_day)
 
         if actions_this_step:
@@ -479,39 +598,60 @@ def check_trend_down_since_sell_all(df, sell_all_date):
 def simulate_next_hour_suggestion(stock_data, current_positions):
     """
     根据过去365天的小时数据和当前持仓交易记录，模拟下一个小时的操作建议，
-    逻辑与 backtest_portfolio() 保持一致：
-
-      - 如果持仓（shares > 0）：
-            * 如果当前价格 <= 入场价 * 0.5，则建议 "SELL_ALL (STOP LOSS)"
-            * 如果 partial_sell_count == 4，则建议 "SELL_ALL"
-            * 否则，利用自入场以来的最高价格 (max_profit_price)：
-                  如果当前价格 <= max_profit_price * trailing_stop_pct 且当前价 >= 入场价，则建议 "SELL_ALL"（Trailing Stop）
-            * 否则，如果存在 last_partial_sell_price 且当前价格 >= last_partial_sell_price*(1+partial_profit_threshold) 且 partial_sell_count < 4，
-                  则建议 "PARTIAL_SELL"
-            * 否则建议 "HOLD"
-      - 如果无持仓：
-            * 如果当前没有卖出记录（即从未完全卖出过），则只要检测到上升趋势（trend_up）就建议 "BUY"
-            * 如果存在 sell_all 记录，则必须检查从最后一次卖出以来，在历史数据中是否经历过下降趋势；
-                - 如果经历过且当前检测到上升趋势，则建议 "BUY"
-                - 否则建议 "HOLD"
-    参数：
-      - stock_data: dict，键为股票代码，值为对应的 DataFrame（过去365天数据，包含 'datetime','open','high','low','close'）
-      - current_positions: dict，键为股票代码，值为交易记录列表（格式见示例）
-    返回：
-      - suggestions: dict，每只股票给出建议及详细理由
+    逻辑与 backtest_portfolio() 保持一致（同时加入 SQQQ 对冲逻辑）。
     """
     suggestions = {}
     for ticker, df in stock_data.items():
-        # 确保时间排序
         df['datetime'] = pd.to_datetime(df['datetime'])
         df = df.sort_values(by='datetime').reset_index(drop=True)
         df = compute_indicators(df)
         df['MA200_prev'] = df['MA200'].shift(1)
         latest = df.iloc[-1]
         prev_ma200 = latest['MA200_prev'] if pd.notna(latest['MA200_prev']) else latest['MA200']
-        trend_up, trend_down = get_signals(latest, prev_ma200)
         current_price = latest['close']
 
+        # 对 SQQQ 做特殊处理：根据所有非对冲品种的最新趋势决定买入或卖出
+        if ticker == "SQQQ":
+            non_hedge_all_down = True
+            non_hedge_any_up = False
+            for t, d in stock_data.items():
+                if t == "SQQQ":
+                    continue
+                d['datetime'] = pd.to_datetime(d['datetime'])
+                d = d.sort_values(by='datetime').reset_index(drop=True)
+                d = compute_indicators(d)
+                row = d.iloc[-1]
+                prev = d.iloc[-2]['MA200'] if len(d) > 1 else row['MA200']
+                trend_up, trend_down = get_signals(row, prev)
+                if trend_up:
+                    non_hedge_any_up = True
+                if not trend_down:
+                    non_hedge_all_down = False
+            if non_hedge_all_down and not non_hedge_any_up:
+                suggestion = "BUY"
+                reason = "所有非对冲品种均呈下跌趋势；建议用余额50%买入对冲品 SQQQ"
+            elif non_hedge_any_up:
+                suggestion = "SELL_ALL"
+                reason = "至少有一只非对冲品种呈上升趋势；建议卖出所有 SQQQ 对冲仓位"
+            else:
+                suggestion = "HOLD"
+                reason = "无明显对冲信号"
+            suggestions[ticker] = {
+                "suggestion": suggestion,
+                "reason": reason,
+                "current_price": current_price,
+                "trend_up": None,
+                "trend_down": None,
+                "entry_price": None,
+                "shares": None,
+                "partial_sell_count": None,
+                "last_partial_sell_price": None,
+                "max_profit_price": None
+            }
+            continue
+
+        # 非对冲品种采用原有逻辑
+        trend_up, trend_down = get_signals(latest, prev_ma200)
         # 从 current_positions 获取交易记录列表，并计算当前净持仓信息
         tx_list = current_positions.get(ticker, [])
         pos = get_current_position(tx_list)
@@ -521,7 +661,6 @@ def simulate_next_hour_suggestion(stock_data, current_positions):
         last_partial_sell_price = pos.get("last_partial_sell_price", entry_price)
         entry_date = pos.get("entry_date", None)
 
-        # 如果持仓且有入场日期，则从过去数据中计算持仓以来的最高价
         if shares > 0 and entry_date is not None:
             entry_date = pd.to_datetime(entry_date)
             df_since_entry = df[df['datetime'] >= entry_date]
@@ -529,7 +668,6 @@ def simulate_next_hour_suggestion(stock_data, current_positions):
         else:
             max_profit_price = current_price
 
-        # 尝试加载该股票最佳参数
         params_path = os.path.join("data", f"{ticker}_best_params.json")
         if os.path.exists(params_path):
             with open(params_path, "r") as f:
@@ -539,9 +677,7 @@ def simulate_next_hour_suggestion(stock_data, current_positions):
         trailing_stop_pct = best_params.get("trailing_stop_pct", 0.90)
         partial_profit_threshold = best_params.get("partial_profit_threshold", 0.05)
 
-        # 决策建议
         if shares > 0:
-            # 持仓时判断卖出条件
             if current_price <= entry_price * 0.5:
                 suggestion = "SELL_ALL (STOP LOSS)"
                 reason = f"当前价 {current_price} <= 50% 的入场价 {entry_price}"
@@ -555,15 +691,12 @@ def simulate_next_hour_suggestion(stock_data, current_positions):
                   current_price >= last_partial_sell_price * (1 + partial_profit_threshold) and
                   partial_sell_count < 4):
                 suggestion = "PARTIAL_SELL"
-                reason = f"部分止盈条件满足，卖出1/4：当前价 {current_price} >= {last_partial_sell_price}*(1+{partial_profit_threshold}), 部分卖出次数 {partial_sell_count} < 4"
+                reason = f"部分止盈条件满足，卖出1/4：当前价 {current_price} >= {last_partial_sell_price}*(1+{partial_profit_threshold})，部分卖出次数 {partial_sell_count} < 4"
             else:
                 suggestion = "HOLD"
                 reason = "无卖出信号"
         else:
-            # 无持仓时判断买入条件
-            # 首先判断是否存在 sell_all 记录
             if not tx_list or not any(tx.get("action", "").lower() == "sell_all" for tx in tx_list):
-                # 从未卖出过，则只要上升趋势即 BUY
                 if trend_up:
                     suggestion = "BUY"
                     reason = "检测到上升趋势信号，且未曾卖出过，建议用余额1/2购买"
@@ -571,7 +704,6 @@ def simulate_next_hour_suggestion(stock_data, current_positions):
                     suggestion = "HOLD"
                     reason = "未触发买入条件"
             else:
-                # 存在sell_all记录，需确认从最后一次sell_all以来经历过下降趋势
                 sell_all_dates = [tx["date"] for tx in tx_list if tx.get("action", "").lower() == "sell_all"]
                 last_sell_date = max(sell_all_dates) if sell_all_dates else None
                 if last_sell_date is not None and check_trend_down_since_sell_all(df, last_sell_date):
@@ -607,12 +739,14 @@ if __name__ == "__main__":
     days = args.days
 
     stock_data = {}
-    for stock in ["AMZN", "META", "NVDA", "TSLA", "TQQQ", "PLTR", "SNOW", "GOOGL", "CRWD", "AAPL", "AVGO", "KO", "SPY", "VRT", "AMD"]:
+    for stock in ["AMZN", "META", "NVDA", "TSLA", "TQQQ", "PLTR", "SNOW",
+                  "GOOGL", "AAPL", "AVGO", "KO", "SPY", "VRT", "AMD", "COST",
+                  "JNJ", "JPM", "ARKK", 'SQQQ']:
         df = fetch_stock_data(stock, days, "hour")
         stock_data[stock] = df
-    # trade_df, detailed_trade_df, summary = backtest_portfolio(stock_data, initial_balance=20000)
-    # print(f"Test performance {summary}")
-    # trade_df.to_csv(f"output/portfolio-{days}.csv")
+    trade_df, detailed_trade_df, summary = backtest_portfolio(stock_data, initial_balance=20000)
+    print(f"Test performance {summary}")
+    trade_df.to_csv(f"output/portfolio-{days}.csv")
     pos_path = os.path.join("position", "position.json")
     if os.path.exists(pos_path):
         with open(pos_path, "r") as f:
@@ -621,5 +755,16 @@ if __name__ == "__main__":
         current_positions = {}
     suggestions = simulate_next_hour_suggestion(stock_data, current_positions)
     print("下一个小时操作建议：")
+    subject = "股票策略通知"
+    sms_message = "下一个小时建议：\n"
     for ticker, info in suggestions.items():
-        print(f"{ticker}: {info['suggestion']} (当前价 {info['current_price']}) - {info['reason']}")
+        line = f"{ticker}: {info['suggestion']} (当前价 {info['current_price']}) - {info['reason']}\n"
+        print(line)
+        sms_message += line
+    from_addr = "ylzhao3377@gmail.com"
+    to_addrs = ["ylzhao3377@gmail.com"]
+    smtp_server = "smtp.gmail.com"
+    smtp_port = 587
+    smtp_user = "ylzhao3377@gmail.com"
+    smtp_password = "pntr minq hlcb uikz"  # 推荐使用应用专用密码
+    send_email(subject, sms_message, from_addr, to_addrs, smtp_server, smtp_port, smtp_user, smtp_password)
