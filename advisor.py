@@ -574,7 +574,7 @@ if __name__ == "__main__":
     advisor = PortfolioAdvisor(strategy_results_file, combined_log_file, snapshot_log_file)
 
     # Analyze latest data (past 5 days)
-    advisor.analyze_latest_data(lookback_days=5)
+    advisor.analyze_latest_data(lookback_days=365)
 
     # Update logs
     advisor.update_logs()
