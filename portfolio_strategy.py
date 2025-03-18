@@ -384,6 +384,10 @@ class SynchronizedPortfolio:
             dict: Portfolio snapshot
         """
         snapshot = {"Date": current_time}
+        # Add the PST version of time
+        current_time_pst = convert_to_pst(current_time)
+        snapshot["Date_PST"] = current_time_pst
+
         total_position_value = 0
         total_realized_profit = 0
 
@@ -472,9 +476,9 @@ if __name__ == "__main__":
         strategy_type = row['Chosen Strategy'].lower().strip()  # 'trend' or 'range'
         best_params = ast.literal_eval(row['Best Params'])
         allocation_pct = float(row['Allocation (%)'])
-        now = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+        now = datetime.now().strftime("%Y-%m-%d")
         # Use fetch_stock_data from simple_strategy.py
-        df = fetch_stock_data(ticker, "2025-03-12", now, "hour")
+        df = fetch_stock_data(ticker, "2025-03-13", now, "hour")
         if df.empty:
             print(f"{ticker} has no data, skipping.")
             continue
