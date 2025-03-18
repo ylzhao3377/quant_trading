@@ -103,25 +103,39 @@ def optimize_strategy(df, ticker, strategy_type='trend', n_trials=50, initial_ba
     if verbose:
         study.optimize(lambda trial: objective(trial, df, strategy_type, initial_balance), n_trials=n_trials)
     else:
-        # 屏蔽 trial 内部的输出
         with HiddenPrints():
             study.optimize(lambda trial: objective(trial, df, strategy_type, initial_balance), n_trials=n_trials)
 
     pareto_trials = study.best_trials
     print(f"\n✅ 共找到 {len(pareto_trials)} 个 Pareto 最优解")
 
-    # 例如选择 ROI 最大的一个
-    best_trial = max(pareto_trials, key=lambda t: -t.values[0])
+    # 获取所有 ROI、MDD、Sharpe 数据
+    roi_values = np.array([-t.values[0] for t in pareto_trials])  # 负号转换回正值
+    mdd_values = np.array([t.values[1] for t in pareto_trials])
+    sharpe_values = np.array([-t.values[2] for t in pareto_trials])  # 负号转换回正值
+
+    # 归一化指标 (防止某个指标的数量级过大影响最终选择)
+    roi_norm = (roi_values - roi_values.min()) / (roi_values.max() - roi_values.min() + 1e-8)
+    sharpe_norm = (sharpe_values - sharpe_values.min()) / (sharpe_values.max() - sharpe_values.min() + 1e-8)
+    mdd_norm = (mdd_values.max() - mdd_values) / (mdd_values.max() - mdd_values.min() + 1e-8)  # 反向归一化
+
+    # 计算综合评分 (自定义权重)
+    weights = [0.55, 0.3, 0.15]  # ROI 50%, Sharpe 30%, MDD 20%
+    scores = weights[0] * roi_norm + weights[1] * sharpe_norm + weights[2] * mdd_norm
+
+    # 选择综合评分最高的 trial 作为最佳参数
+    best_index = np.argmax(scores)
+    best_trial = pareto_trials[best_index]
     best_params = best_trial.params
 
-    # 使用最优参数重新跑一次回测，生成交易日志并计算指标
+    # 重新跑一次回测
     portfolio = SynchronizedPortfolio(total_capital=initial_balance)
     portfolio.add_account("TUNE", strategy_type, best_params, df, allocation_pct=100)
     portfolio.run()
     trade_log_df = portfolio.combined_trade_log()
     roi, max_dd, sharpe = compute_metrics(trade_log_df, initial_balance=initial_balance)
 
-    print("\n🎯 [最佳解]")
+    print("\n🎯 [最佳综合解]")
     print(f"参数: {best_params}")
     print(f"ROI: {roi:.2f}%, Max Drawdown: {max_dd:.2f}%, Sharpe Ratio: {sharpe:.2f}")
 
@@ -145,7 +159,7 @@ class HiddenPrints:
 
 
 def batch_backtest(ticker_list, result_file='strategy_results.csv', n_trials=50, verbose=False,
-                   roi_threshold=0, max_dd_threshold=-20, sharpe_threshold=0.1):
+                   roi_threshold=0, max_dd_threshold=-30, sharpe_threshold=1):
     results = []
     allocation_scores = []
 
@@ -199,12 +213,6 @@ def batch_backtest(ticker_list, result_file='strategy_results.csv', n_trials=50,
             chosen_sharpe is not None and chosen_sharpe >= sharpe_threshold
         )
 
-        # === Allocation Score 计算 (只有达标的才纳入) ===
-        allocation_score = 0
-        if eligible and chosen_dd != 0:
-            allocation_score = chosen_roi / abs(chosen_dd)
-        allocation_scores.append(allocation_score if eligible else 0)
-
         # === 记录结果 ===
         results.append({
             'Stock': ticker,
@@ -213,25 +221,40 @@ def batch_backtest(ticker_list, result_file='strategy_results.csv', n_trials=50,
             'Max Drawdown (%)': chosen_dd,
             'Sharpe Ratio': chosen_sharpe,
             'Best Params': chosen_params,
-            'Allocation Score': allocation_score,
             'Eligible': eligible
         })
 
-    # === 转成 DataFrame ===
-    result_df = pd.DataFrame(results)
+    # === 归一化并计算 allocation score ===
+    df_results = pd.DataFrame(results)
 
-    # === Allocation 比例计算（对达标股票按分数分配比例） ===
-    total_score = sum([score for score, r in zip(allocation_scores, results) if r['Eligible']])
-    result_df['Allocation (%)'] = result_df.apply(
-        lambda row: (row['Allocation Score'] / total_score * 100) if (row['Eligible'] and total_score > 0) else 0,
-        axis=1
-    )
+    # 只考虑达标的股票
+    df_results = df_results[df_results["Eligible"] == True]
+
+    if not df_results.empty:
+        # 标准化 ROI、Sharpe、MDD
+        roi_values = df_results["ROI (%)"].astype(float)
+        sharpe_values = df_results["Sharpe Ratio"].astype(float)
+        mdd_values = df_results["Max Drawdown (%)"].astype(float)
+
+        roi_norm = (roi_values - roi_values.min()) / (roi_values.max() - roi_values.min() + 1e-8)
+        sharpe_norm = (sharpe_values - sharpe_values.min()) / (sharpe_values.max() - sharpe_values.min() + 1e-8)
+        mdd_norm = (mdd_values.max() - mdd_values) / (mdd_values.max() - mdd_values.min() + 1e-8)  # 反向归一化
+
+        # 计算 allocation score
+        weights = [0.5, 0.3, 0.2]  # ROI 50%, Sharpe 30%, MDD 20%
+        df_results["Allocation Score"] = weights[0] * roi_norm + weights[1] * sharpe_norm + weights[2] * mdd_norm
+
+        # 计算 allocation (%)，我们想确保总分配加起来等于 20%
+        total_score = df_results["Allocation Score"].sum()
+        df_results["Allocation (%)"] = (df_results["Allocation Score"] / total_score) * 200 if total_score > 0 else 0
+    else:
+        df_results["Allocation (%)"] = 0
 
     # === 保存结果 ===
-    result_df.to_csv(result_file, index=False)
+    df_results.to_csv(result_file, index=False)
     print(f"✅ 筛选并分配比例后的组合表已保存至 {result_file}")
 
-    return result_df
+    return df_results
 
 
 # 示例：假设我们对某个股票进行调优
