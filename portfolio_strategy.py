@@ -4,9 +4,43 @@ import ast
 import os
 from polygon import RESTClient
 from datetime import datetime, timedelta
+import smtplib
+from email.message import EmailMessage
 
 
 os.environ["POLYGON_API_KEY"] = "0Fp6qkxgz6QugnvLPiR6d9cEMpK3hxFF"
+
+
+def send_email(subject, message, from_addr, to_addrs, smtp_server, smtp_port, smtp_user, smtp_password,
+               attachments=None):
+    # 创建邮件对象
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = from_addr
+    msg["To"] = ", ".join(to_addrs)
+    msg.set_content(message)
+
+    # 添加附件
+    if attachments:
+        for file_path in attachments:
+            try:
+                with open(file_path, "rb") as f:
+                    file_data = f.read()
+                    file_name = os.path.basename(file_path)
+                # 添加附件，maintype 和 subtype 可根据需要调整
+                msg.add_attachment(file_data, maintype="application", subtype="octet-stream", filename=file_name)
+            except Exception as e:
+                print(f"无法附加文件 {file_path}: {e}")
+
+    # 发送邮件
+    try:
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()  # 启用 TLS 加密
+            server.login(smtp_user, smtp_password)
+            server.send_message(msg)
+        print("邮件发送成功！")
+    except Exception as e:
+        print(f"发送邮件失败: {e}")
 
 
 # === 屏蔽 Optuna 内部 trial 输出 ===
@@ -44,35 +78,6 @@ def fetch_stock_data(ticker: str, start_date: str, end_date: str, timespan: str)
         return df
     df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms')
     return df
-
-
-def compute_indicators(df):
-    # 均线与ATR计算
-    df['EMA50'] = df['close'].ewm(span=50).mean()
-    df['EMA200'] = df['close'].ewm(span=200).mean()
-    df['H-L'] = df['high'] - df['low']
-    df['H-PC'] = abs(df['high'] - df['close'].shift(1))
-    df['L-PC'] = abs(df['low'] - df['close'].shift(1))
-    df['TR'] = df[['H-L', 'H-PC', 'L-PC']].max(axis=1)
-    df['ATR'] = df['TR'].rolling(14).mean()
-
-    # 布林带
-    df['Middle'] = df['close'].rolling(50).mean()
-    df['STD'] = df['close'].rolling(50).std()
-    df['Upper'] = df['Middle'] + 2 * df['STD']
-    df['Lower'] = df['Middle'] - 2 * df['STD']
-
-    # ADX指标
-    df['+DM'] = np.where(df['high'] > df['high'].shift(1), df['high'] - df['high'].shift(1), 0)
-    df['-DM'] = np.where(df['low'] < df['low'].shift(1), df['low'].shift(1) - df['low'], 0)
-    df['+DI'] = 100 * (df['+DM'].rolling(14).sum() / df['ATR'])
-    df['-DI'] = 100 * (df['-DM'].rolling(14).sum() / df['ATR'])
-    df['DX'] = (abs(df['+DI'] - df['-DI']) / (df['+DI'] + df['-DI']).replace(0, np.nan)) * 100
-    df['ADX'] = df['DX'].rolling(14).mean()
-
-    # 成交量均值（检测放量）
-    df['Volume_MA'] = df['volume'].rolling(20).mean()
-    return
 
 
 # 修改后的 compute_indicators，支持传入布林带窗口参数
@@ -373,7 +378,7 @@ class SynchronizedPortfolio:
                 weight = strength / total_strength if total_strength > 0 else 0
                 allocated_funds = pre_total_balance * weight
                 # 严格以当前账户余额为上限
-                funds_to_use = min(allocated_funds, account.balance * 2)
+                funds_to_use = min(allocated_funds, account.balance)
                 price = row['close']
                 balance_before = account.balance  # 买入前账户余额
                 shares_to_buy = int(funds_to_use / price)
@@ -425,6 +430,38 @@ class SynchronizedPortfolio:
             if valid_orders or is_last_of_day:
                 snapshot = self.take_snapshot(current_time)
                 self.snapshot_log.append(snapshot)
+        # --- 添加最终持仓状态记录 (Final HOLD) ---
+        final_time = all_times[-1]
+        # 计算最终操作前全组合现金余额
+        final_pre_total_balance = self.capital_pool.status() + sum(
+            data['account'].balance for data in self.accounts.values()
+        )
+        for name, data in self.accounts.items():
+            account = data['account']
+            df = data['data']
+            # 取最新数据行
+            latest_row = df.iloc[-1]
+            price = latest_row['close']
+            if account.strategy_type == 'trend':
+                final_position = account.position
+                final_balance = account.balance
+            elif account.strategy_type == 'range':
+                final_position = account.base_position + account.float_position
+                final_balance = account.balance
+            final_log = {
+                "Date": latest_row['datetime'],
+                "Action": "HOLD_FINAL",
+                "Reason": "Final holding state",
+                "Price": price,
+                "Shares": final_position,
+                "Balance": final_balance,
+                "Position": final_position,
+                "Realized_Profit": account.realized_profit,
+                "Pre_Total_Balance": final_pre_total_balance,
+                "Operation_Ratio": 0,  # 不涉及交易比例
+                "Stock": name
+            }
+            self.trade_log.append(final_log)
 
     def take_snapshot(self, current_time):
         snapshot = {"Date": current_time}
@@ -489,7 +526,7 @@ if __name__ == "__main__":
         best_params = ast.literal_eval(row['Best Params'])
         allocation_pct = float(row['Allocation (%)'])
         now = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
-        df = fetch_stock_data(ticker, "2025-03-12", now, "hour")
+        df = fetch_stock_data(ticker, "2024-03-12", now, "hour")
         if df.empty:
             print(f"{ticker} 无数据，跳过。")
             continue

@@ -4,8 +4,8 @@ import numpy as np
 from optuna import TrialPruned
 import sys
 import os
-from portfoilo_startegy import fetch_stock_data
-from portfoilo_startegy import SynchronizedPortfolio
+from portfolio_strategy import fetch_stock_data
+from portfolio_strategy import SynchronizedPortfolio
 from datetime import datetime, timedelta
 
 # 假设下面这些函数和类已经从新的策略代码中引入：
@@ -13,40 +13,6 @@ from datetime import datetime, timedelta
 # - compute_indicators（在 SynchronizedPortfolio.add_account 中会调用）
 # - get_available_funds
 # - 以及其他辅助函数
-
-# 此外，假设 fetch_stock_data 已经定义（或从 simple_strategy 中引入）
-
-
-def send_email(subject, message, from_addr, to_addrs, smtp_server, smtp_port, smtp_user, smtp_password,
-               attachments=None):
-    # 创建邮件对象
-    msg = EmailMessage()
-    msg["Subject"] = subject
-    msg["From"] = from_addr
-    msg["To"] = ", ".join(to_addrs)
-    msg.set_content(message)
-
-    # 添加附件
-    if attachments:
-        for file_path in attachments:
-            try:
-                with open(file_path, "rb") as f:
-                    file_data = f.read()
-                    file_name = os.path.basename(file_path)
-                # 添加附件，maintype 和 subtype 可根据需要调整
-                msg.add_attachment(file_data, maintype="application", subtype="octet-stream", filename=file_name)
-            except Exception as e:
-                print(f"无法附加文件 {file_path}: {e}")
-
-    # 发送邮件
-    try:
-        with smtplib.SMTP(smtp_server, smtp_port) as server:
-            server.starttls()  # 启用 TLS 加密
-            server.login(smtp_user, smtp_password)
-            server.send_message(msg)
-        print("邮件发送成功！")
-    except Exception as e:
-        print(f"发送邮件失败: {e}")
 
 
 # 计算回测指标函数（你可以直接使用你原来的 compute_metrics）
@@ -273,6 +239,6 @@ if __name__ == "__main__":
     # 这里用 fetch_stock_data 获取数据
     ticker_list = ["AMZN", "META", "NVDA", "TSLA", "TQQQ", "PLTR", "SNOW", "CRM",
                    "GOOGL", "AAPL", "AVGO", "KO", "SPY", "VRT", "AMD", "COST",
-                   "JNJ", "JPM", 'SQQQ', "ASML", "BRK.B", "CRWD", "PYPL",
+                   "JNJ", "JPM", 'MSFT', "ASML", "BRK.B", "CRWD", "PYPL",
                    "DIS", "AXP", "ROKU", "COIN", "SHOP", "INTC"]
     batch_backtest(ticker_list, result_file='strategy_results.csv', n_trials=30, verbose=False)
