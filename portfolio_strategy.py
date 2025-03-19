@@ -685,7 +685,7 @@ if __name__ == "__main__":
 
         # Get the date range for fetching data
         now = datetime.now()
-        end_date = now.strftime("%Y-%m-%d")
+        end_date = (now+timedelta(days=1)).strftime("%Y-%m-%d")
 
         # If we have existing logs, fetch data from a bit before the last date
         # to ensure we have enough data for technical indicators
@@ -763,13 +763,13 @@ if __name__ == "__main__":
     try:
         # For combined trade log
         full_combined_log = pd.read_csv(combined_log_path)
-        trimmed_combined_log = full_combined_log.tail(200)  # Get last 200 rows
+        trimmed_combined_log = full_combined_log.tail(100)  # Get last 100 rows
         trimmed_combined_path = "combined_trade_log_latest.csv"
         trimmed_combined_log.to_csv(trimmed_combined_path, index=False)
 
         # For snapshot log
         full_snapshot_log = pd.read_csv(snapshot_log_path)
-        trimmed_snapshot_log = full_snapshot_log.tail(200)  # Get last 200 rows
+        trimmed_snapshot_log = full_snapshot_log.tail(20)  # Get last 20 rows
         trimmed_snapshot_path = "snapshot_trade_log_latest.csv"
         trimmed_snapshot_log.to_csv(trimmed_snapshot_path, index=False)
 
