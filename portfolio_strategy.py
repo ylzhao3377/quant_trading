@@ -279,7 +279,7 @@ class SynchronizedPortfolio:
                 allocated_funds = pre_total_balance * weight
 
                 # Limit to current account balance
-                funds_to_use = min(allocated_funds, account.balance)
+                funds_to_use = min(allocated_funds, account.balance * 2)
                 price = row['close']
                 balance_before = account.balance
                 shares_to_buy = int(funds_to_use / price)
@@ -478,7 +478,7 @@ if __name__ == "__main__":
         allocation_pct = float(row['Allocation (%)'])
         now = datetime.now().strftime("%Y-%m-%d")
         # Use fetch_stock_data from simple_strategy.py
-        df = fetch_stock_data(ticker, "2025-03-13", now, "hour")
+        df = fetch_stock_data(ticker, "2024-03-01", now, "hour")
         if df.empty:
             print(f"{ticker} has no data, skipping.")
             continue
