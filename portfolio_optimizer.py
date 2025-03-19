@@ -339,9 +339,9 @@ def batch_backtest(ticker_list, result_file='strategy_results.csv', n_trials=50,
         weights = [0.5, 0.3, 0.2]  # ROI: 50%, Sharpe: 30%, MDD: 20%
         df_results["Allocation Score"] = weights[0] * roi_norm + weights[1] * sharpe_norm + weights[2] * mdd_norm
 
-        # Calculate allocation percentages (total = 200%)
+        # Calculate allocation percentages (total = 100%)
         total_score = df_results["Allocation Score"].sum()
-        df_results["Allocation (%)"] = (df_results["Allocation Score"] / total_score) * 200 if total_score > 0 else 0
+        df_results["Allocation (%)"] = (df_results["Allocation Score"] / total_score) * 100 if total_score > 0 else 0
     else:
         df_results["Allocation (%)"] = 0
 
