@@ -138,7 +138,7 @@ def optimize_strategy(df, ticker, strategy_type='trend', n_trials=50, initial_ba
     mdd_norm = (mdd_values.max() - mdd_values) / (mdd_values.max() - mdd_values.min() + 1e-8)  # Reverse for MDD
 
     # Calculate composite score with custom weights
-    weights = [0.55, 0.3, 0.15]  # ROI: 55%, Sharpe: 30%, MDD: 15%
+    weights = [0.7, 0.2, 0.1]   # ROI: 55%, Sharpe: 30%, MDD: 15%
     scores = weights[0] * roi_norm + weights[1] * sharpe_norm + weights[2] * mdd_norm
 
     # Select best parameter set by composite score
@@ -336,7 +336,7 @@ def batch_backtest(ticker_list, result_file='strategy_results.csv', n_trials=50,
         mdd_norm = (mdd_values.max() - mdd_values) / (mdd_values.max() - mdd_values.min() + 1e-8)  # Reverse for MDD
 
         # Calculate allocation score with weighted metrics
-        weights = [0.5, 0.3, 0.2]  # ROI: 50%, Sharpe: 30%, MDD: 20%
+        weights = [0.7, 0.2, 0.1]  # ROI: 50%, Sharpe: 30%, MDD: 20%
         df_results["Allocation Score"] = weights[0] * roi_norm + weights[1] * sharpe_norm + weights[2] * mdd_norm
 
         # Calculate allocation percentages (total = 100%)
@@ -357,5 +357,5 @@ if __name__ == "__main__":
     ticker_list = ["AMZN", "META", "NVDA", "TSLA", "TQQQ", "PLTR", "SNOW", "CRM",
                    "GOOGL", "AAPL", "AVGO", "KO", "SPY", "VRT", "AMD", "COST",
                    "JNJ", "JPM", 'MSFT', "ASML", "BRK.B", "CRWD", "PYPL", "SBUX",
-                   "DIS", "AXP", "ROKU", "COIN", "SHOP", "INTC", "LULU"]
+                   "DIS", "AXP", "ROKU", "COIN", "SHOP", "INTC", "LULU", "PANW"]
     batch_backtest(ticker_list, result_file='strategy_results.csv', n_trials=30, verbose=False)
