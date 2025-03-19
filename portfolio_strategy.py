@@ -674,14 +674,14 @@ if __name__ == "__main__":
                 existing_combined = pd.read_csv(combined_log_path)
                 existing_combined['Date'] = pd.to_datetime(existing_combined['Date'])
                 last_date = existing_combined['Date'].max()
-                # Get data from 30 days before the last date to ensure proper indicator calculation
-                start_date = (last_date - timedelta(days=30)).strftime("%Y-%m-%d")
+                # Get data from 100 days before the last date to ensure proper indicator calculation
+                start_date = (last_date - timedelta(days=100)).strftime("%Y-%m-%d")
             except Exception as e:
                 print(f"Error determining start date from logs: {e}")
-                start_date = "2024-03-13"  # Default start date
+                start_date = "2025-03-13"  # Default start date
         else:
             # If no existing logs, use a fixed start date
-            start_date = "2024-03-13"
+            start_date = "2025-03-13"
 
         print(f"Fetching data for {ticker} from {start_date} to {end_date}")
 
