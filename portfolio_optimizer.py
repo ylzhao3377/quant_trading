@@ -73,6 +73,7 @@ def objective(trial, df, strategy_type, initial_balance=10000):
             'min_strength': trial.suggest_float("min_strength", 0.2, 0.7),
             'min_drop_pct': trial.suggest_float("min_drop_pct", 0.005, 0.02),
             'min_rise_pct': trial.suggest_float("min_rise_pct", 0.005, 0.02),
+            'trailing_stop_pct': trial.suggest_float("trailing_stop_pct", 0.90, 0.98),
         }
     else:
         raise ValueError("Unknown strategy type")
@@ -376,7 +377,7 @@ def batch_backtest(ticker_list, result_file='strategy_results.csv', n_trials=50,
 # Example usage
 if __name__ == "__main__":
     ticker_list = ["AMZN", "META", "NVDA", "TSLA", "TQQQ", "PLTR", "SNOW", "CRM",
-                   "GOOGL", "AAPL", "AVGO", "KO", "SPY", "VRT", "AMD", "COST",
+                   "GOOGL", "AAPL", "AVGO", "KO", "SPY", "VRT", "AMD", "COST", "UBER",
                    "JNJ", "JPM", 'MSFT', "ASML", "BRK.B", "CRWD", "PYPL", "SBUX",
                    "DIS", "AXP", "ROKU", "COIN", "SHOP", "INTC", "LULU", "PANW"]
     batch_backtest(ticker_list, result_file='strategy_results.csv', n_trials=30, verbose=False)

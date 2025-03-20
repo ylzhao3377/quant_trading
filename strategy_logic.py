@@ -53,7 +53,8 @@ def fetch_stock_data(ticker: str, start_date: str, end_date: str, timespan: str)
             timespan=timespan,
             from_=start_date,
             to=end_date,
-            limit=50000
+            limit=50000,
+            adjusted="true"
     ):
         aggs.append(agg)
 
@@ -220,7 +221,7 @@ def run_trend_sell_logic(account, row, params):
 
 def run_range_sell_logic(account, row, params):
     """
-    Execute sell logic for range trading strategy.
+    Execute sell logic for range trading strategy with trailing stop loss.
 
     Args:
         account (object): Trading account with position and balance information
@@ -244,27 +245,75 @@ def run_range_sell_logic(account, row, params):
     init_bal = params.get("initial_balance", 10000)
     max_lot_value = init_bal / 5
 
-    # Position sell logic
-    if price > upper_band and breakout_strength >= min_strength and account.position > 0:
-        if account.last_sell_price is None or price > account.last_sell_price * (1 + min_rise_pct):
-            sell_value = min(max_lot_value * breakout_strength, account.position * price)
-            shares = int(sell_value / price)
-            if shares > 0:
-                total_cost = sum(account.entry_prices[:shares])
-                profit = shares * price - total_cost
-                account.realized_profit += profit
-                account.balance += shares * price
-                account.position -= shares
-                account.entry_prices = account.entry_prices[shares:]
-                account.last_sell_price = price
-                action = "SELL"
+    # Get trailing stop percentage (default to 95% like in trend strategy)
+    trailing_stop_pct = params.get("trailing_stop_pct", 0.95)
+
+    # Sell logic
+    if account.position > 0:
+        sell_shares = 0
+        reason = ""
+
+        # Case 1: Sell on upper band breakout (existing logic)
+        if price > upper_band and breakout_strength >= min_strength:
+            if account.last_sell_price is None or price > account.last_sell_price * (1 + min_rise_pct):
+                sell_value = min(max_lot_value * breakout_strength, account.position * price)
+                sell_shares = int(sell_value / price)
                 reason = f"Sell on break upper (Z={z_score:.2f}, Strength={breakout_strength:.2f})"
-                if account.position == 0:
-                    account.last_buy_price = None
-                    account.last_sell_price = None
-                return {"Date": date, "Action": action, "Reason": reason, "Price": price, "Shares": shares,
-                        "Balance": account.balance, "Position": account.position,
-                        "Realized_Profit": account.realized_profit}
+
+        # Case 2: NEW Trailing Stop Loss Logic based on last sell price
+        elif account.last_sell_price is not None:
+            # Calculate trailing stop price based on the last sell price
+            trailing_stop_price = account.last_sell_price * trailing_stop_pct
+
+            # Check if trailing stop is triggered
+            if price <= trailing_stop_price:
+                sell_shares = account.position  # Sell entire position
+                reason = f"Trailing stop triggered ({trailing_stop_pct * 100}% of last sell ${account.last_sell_price:.2f})"
+
+        # Execute the sell if shares to sell > 0
+        if sell_shares > 0:
+            # Make sure we don't try to sell more than we have
+            sell_shares = min(sell_shares, account.position)
+
+            # Calculate profit
+            if account.entry_prices and len(account.entry_prices) >= sell_shares:
+                total_cost = sum(account.entry_prices[:sell_shares])
+                profit = (sell_shares * price) - total_cost
+            else:
+                # Fallback if entry_prices doesn't contain enough data
+                avg_entry_price = sum(account.entry_prices) / len(account.entry_prices) if account.entry_prices else 0
+                total_cost = avg_entry_price * sell_shares
+                profit = (price - avg_entry_price) * sell_shares
+
+            # Update account state
+            account.realized_profit += profit
+            account.balance += sell_shares * price
+            account.position -= sell_shares
+
+            # Update entry prices array
+            if sell_shares < len(account.entry_prices):
+                account.entry_prices = account.entry_prices[sell_shares:]
+            else:
+                account.entry_prices = []
+
+            account.last_sell_price = price
+
+            # Reset tracking variables if position is closed
+            if account.position == 0:
+                account.last_buy_price = None
+                account.last_sell_price = None
+
+            return {
+                "Date": date,
+                "Action": "SELL",
+                "Reason": reason,
+                "Price": price,
+                "Shares": sell_shares,
+                "Balance": account.balance,
+                "Position": account.position,
+                "Realized_Profit": account.realized_profit
+            }
+
     return None
 
 

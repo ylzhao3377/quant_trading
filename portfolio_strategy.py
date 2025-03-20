@@ -173,7 +173,7 @@ class SubAccount:
                 if price > 0 and self.position > 0:
                     self.entry_prices = [price] * self.position
                 self.last_buy_price = price if self.position > 0 else None
-                self.last_sell_price = None
+                self.last_sell_price = price if self.position > 0 else None
 
 
 class SynchronizedPortfolio:
@@ -414,9 +414,9 @@ class SynchronizedPortfolio:
 
                 # Allocate funds based on total equity, stock's allocation percentage, and signal strength
                 if account.strategy_type == 'trend':
-                    funds_to_use = total_equity * (account.allocation_pct / 30) * weight
+                    funds_to_use = total_equity * (account.allocation_pct / 25) * weight
                 else:
-                    funds_to_use = total_equity * (account.allocation_pct / 100) * weight
+                    funds_to_use = total_equity * (account.allocation_pct / 80) * weight
 
                 # Ensure we don't exceed current account balance
                 funds_to_use = min(funds_to_use, pre_total_balance * weight)
@@ -695,10 +695,10 @@ if __name__ == "__main__":
                 start_date = (last_date - timedelta(days=60)).strftime("%Y-%m-%d")
             except Exception as e:
                 print(f"Error determining start date from logs: {e}")
-                start_date = "2025-03-13"  # Default start date
+                start_date = "2020-03-13"  # Default start date
         else:
             # If no existing logs, use a fixed start date
-            start_date = "2025-03-13"
+            start_date = "2020-03-13"
 
         print(f"Fetching data for {ticker} from {start_date} to {end_date}")
 
