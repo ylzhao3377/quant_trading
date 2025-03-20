@@ -244,45 +244,27 @@ def run_range_sell_logic(account, row, params):
     init_bal = params.get("initial_balance", 10000)
     max_lot_value = init_bal / 5
 
-    # Base position sell logic
-    if price > upper_band and breakout_strength >= min_strength and account.base_position > 0:
+    # Position sell logic
+    if price > upper_band and breakout_strength >= min_strength and account.position > 0:
         if account.last_sell_price is None or price > account.last_sell_price * (1 + min_rise_pct):
-            sell_value = min(max_lot_value * breakout_strength, account.base_position * price)
+            sell_value = min(max_lot_value * breakout_strength, account.position * price)
             shares = int(sell_value / price)
             if shares > 0:
-                total_cost = sum(account.base_entry_prices[:shares])
+                total_cost = sum(account.entry_prices[:shares])
                 profit = shares * price - total_cost
                 account.realized_profit += profit
                 account.balance += shares * price
-                account.base_position -= shares
-                account.base_entry_prices = account.base_entry_prices[shares:]
+                account.position -= shares
+                account.entry_prices = account.entry_prices[shares:]
                 account.last_sell_price = price
                 action = "SELL"
-                reason = f"Base sell on break upper (Z={z_score:.2f}, Strength={breakout_strength:.2f})"
-                if account.base_position == 0:
+                reason = f"Sell on break upper (Z={z_score:.2f}, Strength={breakout_strength:.2f})"
+                if account.position == 0:
                     account.last_buy_price = None
                     account.last_sell_price = None
                 return {"Date": date, "Action": action, "Reason": reason, "Price": price, "Shares": shares,
-                        "Balance": account.balance, "Position": account.base_position,
+                        "Balance": account.balance, "Position": account.position,
                         "Realized_Profit": account.realized_profit}
-
-    # Float position sell logic
-    if price > upper_band and breakout_strength >= min_strength and account.float_position > 0:
-        float_sell_value = min(init_bal * params.get("float_position_pct", 0.1) * breakout_strength,
-                               account.float_position * price)
-        shares = int(float_sell_value / price)
-        if shares > 0:
-            float_total_cost = sum(account.float_entry_prices[:shares])
-            profit = shares * price - float_total_cost
-            account.realized_profit += profit
-            account.balance += shares * price
-            account.float_position -= shares
-            account.float_entry_prices = account.float_entry_prices[shares:]
-            action = "SELL"
-            reason = f"Float sell on break upper (Z={z_score:.2f}, Strength={breakout_strength:.2f})"
-            return {"Date": date, "Action": action, "Reason": reason, "Price": price, "Shares": shares,
-                    "Balance": account.balance, "Position": account.float_position,
-                    "Realized_Profit": account.realized_profit}
     return None
 
 
@@ -344,7 +326,10 @@ class CapitalPool:
         if self.available_capital >= amount:
             self.available_capital -= amount
             return amount
-        return 0
+        else:
+            amount -= 1
+            self.available_capital -= amount
+            return amount
 
     def release(self, amount):
         self.available_capital += amount
@@ -367,5 +352,4 @@ def get_available_funds(account, idle_multiplier=4):
     if account.strategy_type == "trend":
         return account.balance * idle_multiplier if account.position == 0 else account.balance
     elif account.strategy_type == "range":
-        total_pos = account.base_position + account.float_position
-        return account.balance * idle_multiplier if total_pos == 0 else account.balance
+        return account.balance * idle_multiplier if account.position == 0 else account.balance

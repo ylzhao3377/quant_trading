@@ -73,7 +73,6 @@ def objective(trial, df, strategy_type, initial_balance=10000):
             'min_strength': trial.suggest_float("min_strength", 0.2, 0.7),
             'min_drop_pct': trial.suggest_float("min_drop_pct", 0.005, 0.02),
             'min_rise_pct': trial.suggest_float("min_rise_pct", 0.005, 0.02),
-            'float_position_pct': trial.suggest_float("float_position_pct", 0.1, 0.3),
         }
     else:
         raise ValueError("Unknown strategy type")
@@ -132,19 +131,45 @@ def optimize_strategy(df, ticker, strategy_type='trend', n_trials=50, initial_ba
     mdd_values = np.array([t.values[1] for t in pareto_trials])
     sharpe_values = np.array([-t.values[2] for t in pareto_trials])  # Convert back to positive
 
-    # Normalize metrics for comparable scaling
-    roi_norm = (roi_values - roi_values.min()) / (roi_values.max() - roi_values.min() + 1e-8)
-    sharpe_norm = (sharpe_values - sharpe_values.min()) / (sharpe_values.max() - sharpe_values.min() + 1e-8)
-    mdd_norm = (mdd_values.max() - mdd_values) / (mdd_values.max() - mdd_values.min() + 1e-8)  # Reverse for MDD
+    # Filter for trials that meet risk criteria: max_dd >= -20% and Sharpe >= 2
+    valid_indices = []
+    for i in range(len(pareto_trials)):
+        if mdd_values[i] >= -20 and sharpe_values[i] >= 2:
+            valid_indices.append(i)
 
-    # Calculate composite score with custom weights
-    weights = [0.7, 0.2, 0.1]   # ROI: 55%, Sharpe: 30%, MDD: 15%
-    scores = weights[0] * roi_norm + weights[1] * sharpe_norm + weights[2] * mdd_norm
+    # Check if any trials meet the criteria
+    if valid_indices:
+        # Select the trial with highest ROI among those meeting risk criteria
+        best_roi = -float('inf')
+        best_index = -1
+        for i in valid_indices:
+            if roi_values[i] > best_roi:
+                best_roi = roi_values[i]
+                best_index = i
 
-    # Select best parameter set by composite score
-    best_index = np.argmax(scores)
-    best_trial = pareto_trials[best_index]
-    best_params = best_trial.params
+        best_trial = pareto_trials[best_index]
+        best_params = best_trial.params
+
+        print(f"\n🔍 Selected parameters with highest ROI ({best_roi:.2f}%) while meeting risk criteria:")
+        print(f"   Max Drawdown: {mdd_values[best_index]:.2f}%, Sharpe Ratio: {sharpe_values[best_index]:.2f}")
+    else:
+        # If no trials meet the strict criteria, fall back to the original weighted scoring method
+        print("\n⚠️ No trials meet strict risk criteria (max_dd >= -20% AND Sharpe >= 2)")
+        print("   Falling back to weighted scoring method...")
+
+        # Normalize metrics for comparable scaling
+        roi_norm = (roi_values - roi_values.min()) / (roi_values.max() - roi_values.min() + 1e-8)
+        sharpe_norm = (sharpe_values - sharpe_values.min()) / (sharpe_values.max() - sharpe_values.min() + 1e-8)
+        mdd_norm = (mdd_values.max() - mdd_values) / (mdd_values.max() - mdd_values.min() + 1e-8)  # Reverse for MDD
+
+        # Calculate composite score with custom weights
+        weights = [0.7, 0.2, 0.1]  # ROI: 70%, Sharpe: 20%, MDD: 10%
+        scores = weights[0] * roi_norm + weights[1] * sharpe_norm + weights[2] * mdd_norm
+
+        # Select best parameter set by composite score
+        best_index = np.argmax(scores)
+        best_trial = pareto_trials[best_index]
+        best_params = best_trial.params
 
     # Verify performance with best parameters
     portfolio = SynchronizedPortfolio(total_capital=initial_balance)
@@ -175,8 +200,7 @@ def optimize_strategy(df, ticker, strategy_type='trend', n_trials=50, initial_ba
     return best_params, roi, max_dd, sharpe, pareto_trials
 
 
-def batch_backtest(ticker_list, result_file='strategy_results.csv', n_trials=50, verbose=False,
-                   roi_threshold=0, max_dd_threshold=-30, sharpe_threshold=1):
+def batch_backtest(ticker_list, result_file='strategy_results.csv', n_trials=50, verbose=False):
     """
     Run optimization and backtest for multiple stocks.
     First finds all eligible strategies, then selects the best one.
@@ -186,9 +210,6 @@ def batch_backtest(ticker_list, result_file='strategy_results.csv', n_trials=50,
         result_file: Output CSV file for results
         n_trials: Number of optimization trials per stock
         verbose: Whether to print progress
-        roi_threshold: Minimum acceptable ROI (%)
-        max_dd_threshold: Maximum acceptable drawdown (%)
-        sharpe_threshold: Minimum acceptable Sharpe ratio
 
     Returns:
         pd.DataFrame: Results DataFrame
@@ -223,9 +244,9 @@ def batch_backtest(ticker_list, result_file='strategy_results.csv', n_trials=50,
 
             # Check if trend strategy meets eligibility criteria
             trend_eligible = (
-                    trend_roi is not None and trend_roi >= roi_threshold and
-                    trend_dd is not None and trend_dd >= max_dd_threshold and
-                    trend_sharpe is not None and trend_sharpe >= sharpe_threshold
+                    trend_roi is not None and trend_roi > 0 and
+                    trend_dd is not None and trend_dd >= -20 and
+                    trend_sharpe is not None and trend_sharpe >= 2
             )
         except (Exception, TrialPruned) as e:
             print(f"❌ {ticker} TREND strategy failed: {e}")
@@ -241,9 +262,9 @@ def batch_backtest(ticker_list, result_file='strategy_results.csv', n_trials=50,
 
             # Check if range strategy meets eligibility criteria
             range_eligible = (
-                    range_roi is not None and range_roi >= roi_threshold and
-                    range_dd is not None and range_dd >= max_dd_threshold and
-                    range_sharpe is not None and range_sharpe >= sharpe_threshold
+                    range_roi is not None and range_roi > 0 and
+                    range_dd is not None and range_dd >= -20 and
+                    range_sharpe is not None and range_sharpe >= 2
             )
         except (Exception, TrialPruned) as e:
             print(f"❌ {ticker} RANGE strategy failed: {e}")

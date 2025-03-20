@@ -131,10 +131,8 @@ class SubAccount:
             self.max_profit_price = 0
             self.realized_profit = 0
         elif self.strategy_type == 'range':
-            self.base_position = 0
-            self.float_position = 0
-            self.base_entry_prices = []
-            self.float_entry_prices = []
+            self.position = 0
+            self.entry_prices = []
             self.last_buy_price = None
             self.last_sell_price = None
             self.realized_profit = 0
@@ -169,13 +167,12 @@ class SubAccount:
 
         elif self.strategy_type == 'range':
             if 'Position' in last_state:
-                self.base_position = last_state['Position']
+                self.position = last_state['Position']
                 # Initialize entry prices (estimating with the last known price)
                 price = last_state.get('Price', 0)
-                if price > 0 and self.base_position > 0:
-                    self.base_entry_prices = [price] * self.base_position
-                self.float_position = 0  # Assume no float position initially
-                self.last_buy_price = price if self.base_position > 0 else None
+                if price > 0 and self.position > 0:
+                    self.entry_prices = [price] * self.position
+                self.last_buy_price = price if self.position > 0 else None
                 self.last_sell_price = None
 
 
@@ -223,10 +220,8 @@ class SynchronizedPortfolio:
 
         # Initialize strategy-specific attributes
         if strategy_type.lower() == 'range':
-            account.base_position = 0
-            account.float_position = 0
-            account.base_entry_prices = []
-            account.float_entry_prices = []
+            account.position = 0
+            account.entry_prices = []
             account.last_buy_price = None
             account.last_sell_price = None
             account.realized_profit = 0
@@ -343,7 +338,7 @@ class SynchronizedPortfolio:
                         # Use the shared sell logic function from simple_strategy.py
                         log_entry = run_trend_sell_logic(account, row, account.params)
                     elif account.strategy_type == 'range':
-                        pre_position = account.base_position + account.float_position
+                        pre_position = account.position
                         # Use the shared sell logic function from simple_strategy.py
                         log_entry = run_range_sell_logic(account, row, account.params)
                     else:
@@ -384,21 +379,48 @@ class SynchronizedPortfolio:
                             total_strength += strength
                     elif account.strategy_type == 'range':
                         if row['close'] < row['Lower']:
-                            # Use the shared range strength function from simple_strategy.py
-                            strength = compute_range_strength(row, account.params)
-                            if strength >= account.params.get("min_strength", 0.3):
-                                valid_orders.append((account, row, strength))
-                                total_strength += strength
+                            # Calculate price drop from the middle band (as a percentage)
+                            price_drop_pct = (row['Middle'] - row['close']) / row['Middle']
+                            min_drop_pct = account.params.get("min_drop_pct", 0.01)
+
+                            # Check if the drop meets minimum required percentage
+                            if price_drop_pct >= min_drop_pct:
+                                # Check if this is a first buy or if price dropped further from last buy
+                                if account.last_buy_price is None or row['close'] < account.last_buy_price * (
+                                        1 - min_drop_pct):
+                                    # Use the shared range strength function from simple_strategy.py
+                                    strength = compute_range_strength(row, account.params)
+                                    if strength >= account.params.get("min_strength", 0.3):
+                                        valid_orders.append((account, row, strength))
+                                        total_strength += strength
 
             # Execute buy orders with weight-based allocation
             for (account, row, strength) in valid_orders:
+                total_valid_orders = len(valid_orders)
                 weight = strength / total_strength if total_strength > 0 else 0
-                allocated_funds = pre_total_balance * weight
 
-                # Limit to current account balance
-                funds_to_use = min(allocated_funds, account.balance * 2)
+                # Calculate total equity (sum of each account's cash balance + position value)
+                total_equity = 0
+                for name, data in self.accounts.items():
+                    acct = data['account']
+                    acct_df = data['data']
+                    current_rows = acct_df[acct_df['datetime'] == current_time]
+                    current_price = current_rows.iloc[0]['close'] if not current_rows.empty else 0
+                    account_equity = acct.balance + (acct.position * current_price)
+                    total_equity += account_equity
+
+                # Add the capital pool's available funds
+                total_equity += self.capital_pool.status()
+
+                # Allocate funds based on total equity, stock's allocation percentage, and signal strength
+                if account.strategy_type == 'trend':
+                    funds_to_use = total_equity * (account.allocation_pct / 30) * weight
+                else:
+                    funds_to_use = total_equity * (account.allocation_pct / 100) * weight
+
+                # Ensure we don't exceed current account balance
+                funds_to_use = min(funds_to_use, pre_total_balance * weight)
                 price = row['close']
-                balance_before = account.balance
                 shares_to_buy = int(funds_to_use / price)
 
                 if shares_to_buy > 0:
@@ -415,7 +437,7 @@ class SynchronizedPortfolio:
                         log_entry = {
                             "Date": row['datetime'],
                             "Action": "BUY",
-                            "Reason": "Dynamic Buy Allocation (Trend)",
+                            "Reason": f"Dynamic Buy Allocation (Trend) - Strength: {strength:.2f}",
                             "Price": price,
                             "Shares": shares_to_buy,
                             "Balance": account.balance,
@@ -425,17 +447,18 @@ class SynchronizedPortfolio:
                             "Operation_Ratio": buy_ratio
                         }
                     elif account.strategy_type == 'range':
-                        account.base_position += shares_to_buy
-                        account.base_entry_prices.extend([price] * shares_to_buy)
+                        account.position += shares_to_buy
+                        account.entry_prices.extend([price] * shares_to_buy)
                         account.balance -= money_spent
+                        account.last_buy_price = price  # Update the last buy price
                         log_entry = {
                             "Date": row['datetime'],
                             "Action": "BUY",
-                            "Reason": "Dynamic Buy Allocation (Range)",
+                            "Reason": f"Dynamic Buy Allocation (Range) - Strength: {strength:.2f}",
                             "Price": price,
                             "Shares": shares_to_buy,
                             "Balance": account.balance,
-                            "Position": account.base_position + account.float_position,
+                            "Position": account.position,
                             "Realized_Profit": account.realized_profit,
                             "Pre_Total_Balance": pre_total_balance,
                             "Operation_Ratio": buy_ratio
@@ -491,7 +514,7 @@ class SynchronizedPortfolio:
                 # Use last recorded price if data is missing
                 current_price = account.last_price if account.last_price is not None else np.nan
 
-            pos = account.position if account.strategy_type == "trend" else account.base_position
+            pos = account.position
             snapshot[f"Position_{name}"] = pos
             snapshot[f"Price_{name}"] = current_price
             total_position_value += pos * (current_price if pd.notna(current_price) else 0)
