@@ -695,10 +695,10 @@ if __name__ == "__main__":
                 start_date = (last_date - timedelta(days=60)).strftime("%Y-%m-%d")
             except Exception as e:
                 print(f"Error determining start date from logs: {e}")
-                start_date = "2020-03-13"  # Default start date
+                start_date = "2025-03-13"  # Default start date
         else:
             # If no existing logs, use a fixed start date
-            start_date = "2020-03-13"
+            start_date = "2025-03-13"
 
         print(f"Fetching data for {ticker} from {start_date} to {end_date}")
 
