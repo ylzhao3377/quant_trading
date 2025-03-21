@@ -137,44 +137,6 @@ class SubAccount:
             self.last_sell_price = None
             self.realized_profit = 0
 
-    def update_from_last_state(self, last_state):
-        """
-        Update account state from the last known state.
-
-        Args:
-            last_state (dict): The last state information from previous logs
-        """
-        # Update balance
-        if 'Balance' in last_state:
-            self.balance = last_state['Balance']
-
-        # Update realized profit
-        if 'Realized_Profit' in last_state:
-            self.realized_profit = last_state['Realized_Profit']
-
-        # Update strategy-specific attributes
-        if self.strategy_type == 'trend':
-            if 'Position' in last_state and last_state['Position'] > 0:
-                self.in_position = True
-                self.position = last_state['Position']
-                self.entry_price = last_state.get('Price', 0)
-                self.max_profit_price = last_state.get('Price', 0)
-            else:
-                self.in_position = False
-                self.position = 0
-                self.entry_price = 0
-                self.max_profit_price = 0
-
-        elif self.strategy_type == 'range':
-            if 'Position' in last_state:
-                self.position = last_state['Position']
-                # Initialize entry prices (estimating with the last known price)
-                price = last_state.get('Price', 0)
-                if price > 0 and self.position > 0:
-                    self.entry_prices = [price] * self.position
-                self.last_buy_price = price if self.position > 0 else None
-                self.last_sell_price = price if self.position > 0 else None
-
 
 class SynchronizedPortfolio:
     """
@@ -192,7 +154,6 @@ class SynchronizedPortfolio:
         self.accounts = {}  # {ticker: {'account': SubAccount, 'data': DataFrame}}
         self.trade_log = []
         self.snapshot_log = []
-        self.last_date = None  # Track the last processed date
 
     def add_account(self, name, strategy_type, params, df, allocation_pct):
         """
@@ -234,82 +195,16 @@ class SynchronizedPortfolio:
 
         self.accounts[name] = {'account': account, 'data': df}
 
-    def load_from_existing_logs(self, combined_log_path, snapshot_log_path):
-        """
-        Load portfolio state from existing log files.
-
-        Args:
-            combined_log_path (str): Path to combined trade log file
-            snapshot_log_path (str): Path to snapshot log file
-
-        Returns:
-            bool: True if state was successfully loaded, False otherwise
-        """
-        try:
-            # Check if both files exist
-            if not os.path.exists(combined_log_path) or not os.path.exists(snapshot_log_path):
-                print("One or more log files do not exist. Starting fresh.")
-                return False
-
-            # Load the combined trade log
-            combined_df = pd.read_csv(combined_log_path)
-            if combined_df.empty:
-                return False
-
-            # Convert date columns to datetime
-            combined_df['Date'] = pd.to_datetime(combined_df['Date'])
-
-            # Load the snapshot log
-            snapshot_df = pd.read_csv(snapshot_log_path)
-            if snapshot_df.empty:
-                return False
-
-            # Convert date columns to datetime
-            snapshot_df['Date'] = pd.to_datetime(snapshot_df['Date'])
-
-            # Find the last date in the logs
-            self.last_date = max(combined_df['Date'].max(), snapshot_df['Date'].max())
-            print(f"Loading portfolio state as of {self.last_date}")
-
-            # Load existing trade logs to preserve history
-            self.trade_log = combined_df.to_dict('records')
-            self.snapshot_log = snapshot_df.to_dict('records')
-
-            # Get the last state for each stock from the combined log
-            stocks = set(combined_df['Stock'])
-            for stock in stocks:
-                stock_df = combined_df[combined_df['Stock'] == stock]
-                if not stock_df.empty:
-                    last_state = stock_df.iloc[-1].to_dict()
-
-                    # If this stock exists in the current accounts, update its state
-                    if stock in self.accounts:
-                        self.accounts[stock]['account'].update_from_last_state(last_state)
-                        print(f"Updated {stock} position from existing logs")
-
-            return True
-
-        except Exception as e:
-            print(f"Error loading existing logs: {e}")
-            return False
-
-    def run(self, start_from_last_date=False):
+    def run(self):
         """
         Run the portfolio simulation across all accounts.
-
-        Args:
-            start_from_last_date (bool): If True, only process data after the last date in the logs
+        Always starts fresh (no dependency on previous runs).
         """
         # Build unified timeline by merging all datetime columns
         all_times = sorted(set().union(*[set(data['data']['datetime']) for data in self.accounts.values()]))
 
-        # Filter for dates after the last processed date if requested
-        if start_from_last_date and self.last_date is not None:
-            all_times = [dt for dt in all_times if dt > self.last_date]
-            print(f"Processing only new data from {self.last_date} onward")
-
         if not all_times:
-            print("No new data to process.")
+            print("No data to process.")
             return
 
         print(f"Processing {len(all_times)} time points from {all_times[0]} to {all_times[-1]}")
@@ -477,12 +372,6 @@ class SynchronizedPortfolio:
                 snapshot = self.take_snapshot(current_time)
                 self.snapshot_log.append(snapshot)
 
-        # Update the last date processed
-        if all_times:
-            self.last_date = all_times[-1]
-
-        # No longer adding HOLD_FINAL entries to the trade log
-
     def take_snapshot(self, current_time):
         """
         Take a snapshot of the portfolio state at the current time.
@@ -563,94 +452,138 @@ class SynchronizedPortfolio:
         df = df.sort_values("Date").reset_index(drop=True)
         return df
 
-    def append_to_existing_logs(self, combined_log_path, snapshot_log_path):
-        """
-        Append new trade and snapshot data to existing log files.
 
-        Args:
-            combined_log_path (str): Path to combined trade log file
-            snapshot_log_path (str): Path to snapshot log file
+def generate_trade_report(portfolio, hours=96):
+    """
+    Generate a detailed report of all actions in the specified time period.
 
-        Returns:
-            tuple: (new_combined_df, old_combined_df) - DataFrames containing new and old records
-        """
-        combined_df = self.combined_trade_log()
-        snapshot_df = self.snapshot_log_df()
+    Args:
+        portfolio (SynchronizedPortfolio): Portfolio object
+        hours (int): Number of hours to look back (default: 96 hours/4 days)
 
-        # Check if files exist
-        combined_exists = os.path.exists(combined_log_path)
-        snapshot_exists = os.path.exists(snapshot_log_path)
+    Returns:
+        str: Formatted report message
+    """
+    # Get current time in PST for reference
+    now_utc = datetime.now(pytz.UTC)
+    now_pst = convert_to_pst(now_utc)
 
-        existing_combined = pd.DataFrame()  # Initialize with empty DataFrame
-        new_combined_df = combined_df.copy()  # Make a copy of the new data
+    # Get specified hours ago in PST
+    last_period = now_pst - timedelta(hours=hours)
 
-        if combined_exists:
-            try:
-                # Load existing combined log
-                existing_combined = pd.read_csv(combined_log_path)
-                existing_combined['Date'] = pd.to_datetime(existing_combined['Date'])
+    # Get trade log
+    trade_log = portfolio.combined_trade_log()
 
-                # Filter out any HOLD_FINAL rows from existing log
-                if 'Action' in existing_combined.columns:
-                    existing_combined = existing_combined[existing_combined['Action'] != 'HOLD_FINAL']
+    if trade_log.empty:
+        return "No trades were executed in this simulation.\n"
 
-                # Remove any overlap (based on Date and Stock columns)
-                if not combined_df.empty and not existing_combined.empty:
-                    # Create a unique key for merging
-                    combined_df['merge_key'] = combined_df['Date'].astype(str) + '_' + combined_df['Stock'].astype(str)
-                    existing_combined['merge_key'] = existing_combined['Date'].astype(str) + '_' + existing_combined[
-                        'Stock'].astype(str)
+    # Filter for actions in the specified time period (based on PST time)
+    recent_actions = trade_log[trade_log['Date_PST'] >= last_period]
 
-                    # Remove rows from existing_combined that have the same merge_key as in combined_df
-                    merge_keys_to_remove = set(combined_df['merge_key'])
-                    existing_combined = existing_combined[~existing_combined['merge_key'].isin(merge_keys_to_remove)]
+    # Start building the message
+    message = f"📊 TRADING ACTIVITY REPORT ({now_pst.strftime('%Y-%m-%d %H:%M:%S %Z')})\n"
+    message += "=" * 50 + "\n\n"
 
-                    # Remove the merge_key column
-                    existing_combined = existing_combined.drop(columns=['merge_key'])
-                    combined_df = combined_df.drop(columns=['merge_key'])
+    if recent_actions.empty:
+        message += f"No trading activity in the last {hours} hours.\n\n"
+    else:
+        message += f"🕒 LAST {hours} HOURS ACTIVITY SUMMARY\n"
+        message += f"Total number of trades: {len(recent_actions)}\n"
 
-                    # Combine the dataframes with proper handling of empty frames
-                    if not existing_combined.empty:
-                        combined_df = pd.concat([existing_combined, combined_df], ignore_index=True)
-                    # If existing_combined is empty, combined_df is already correct
-            except Exception as e:
-                print(f"Error when processing combined logs: {e}")
-                # If there's an error, keep the original combined_df
+        # Count buy and sell actions
+        buys = recent_actions[recent_actions['Action'] == 'BUY']
+        sells = recent_actions[recent_actions['Action'] == 'SELL']
 
-        if snapshot_exists:
-            try:
-                # Load existing snapshot log
-                existing_snapshot = pd.read_csv(snapshot_log_path)
-                existing_snapshot['Date'] = pd.to_datetime(existing_snapshot['Date'])
+        message += f"Buy orders: {len(buys)}\n"
+        message += f"Sell orders: {len(sells)}\n\n"
 
-                # Remove any overlap (based on Date column only)
-                if not snapshot_df.empty and not existing_snapshot.empty:
-                    # Find the latest date in the existing snapshot
-                    latest_date = existing_snapshot['Date'].max()
+        # Summarize by stock
+        message += "ACTIVITY BY STOCK:\n"
+        for stock in sorted(recent_actions['Stock'].unique()):
+            stock_actions = recent_actions[recent_actions['Stock'] == stock]
+            message += f"\n📈 {stock}:\n"
 
-                    # Keep only rows from the new snapshot_df that are after the latest date
-                    new_snapshot_rows = snapshot_df[snapshot_df['Date'] > latest_date]
+            # Buy summary
+            stock_buys = stock_actions[stock_actions['Action'] == 'BUY']
+            if not stock_buys.empty:
+                total_shares_bought = stock_buys['Shares'].sum()
+                avg_buy_price = stock_buys['Price'].mean()
+                total_buy_value = (stock_buys['Shares'] * stock_buys['Price']).sum()
 
-                    # Combine the dataframes with proper handling of empty frames
-                    if not existing_snapshot.empty:
-                        snapshot_df = pd.concat([existing_snapshot, new_snapshot_rows], ignore_index=True)
-                    # If existing_snapshot is empty, snapshot_df is already correct
-            except Exception as e:
-                print(f"Error when processing snapshot logs: {e}")
-                # If there's an error, keep the original snapshot_df
+                message += f"  🟢 BUYS: {len(stock_buys)} orders\n"
+                message += f"     Total shares: {total_shares_bought}\n"
+                message += f"     Avg price: ${avg_buy_price:.2f}\n"
+                message += f"     Total value: ${total_buy_value:.2f}\n"
 
-        # Save the updated logs
-        combined_df.to_csv(combined_log_path, index=False)
-        snapshot_df.to_csv(snapshot_log_path, index=False)
-        print(f"✅ Updated log files saved to {combined_log_path} and {snapshot_log_path}")
+                # List individual buy orders
+                message += "     Transactions:\n"
+                for _, row in stock_buys.iterrows():
+                    pst_time = row['Date_PST_Str']
+                    message += f"     - {pst_time}: {row['Shares']} shares @ ${row['Price']:.2f} (${row['Shares'] * row['Price']:.2f})\n"
 
-        # Return the new and existing DataFrames for use in generating the summary
-        return (new_combined_df, existing_combined)
+            # Sell summary
+            stock_sells = stock_actions[stock_actions['Action'] == 'SELL']
+            if not stock_sells.empty:
+                total_shares_sold = stock_sells['Shares'].sum()
+                avg_sell_price = stock_sells['Price'].mean()
+                total_sell_value = (stock_sells['Shares'] * stock_sells['Price']).sum()
+
+                message += f"  🔴 SELLS: {len(stock_sells)} orders\n"
+                message += f"     Total shares: {total_shares_sold}\n"
+                message += f"     Avg price: ${avg_sell_price:.2f}\n"
+                message += f"     Total value: ${total_sell_value:.2f}\n"
+
+                # Realized profit
+                if len(stock_sells) > 0 and len(stock_buys) > 0:
+                    # Calculate realized profit directly from the transactions
+                    total_buy_cost = (stock_buys['Shares'] * stock_buys['Price']).sum()
+                    total_sell_value = (stock_sells['Shares'] * stock_sells['Price']).sum()
+                    realized_profit = total_sell_value - total_buy_cost
+                    message += f"     Realized profit: ${realized_profit:.2f}\n"
+                elif len(stock_sells) > 0:
+                    # Fallback to using the Realized_Profit column if available
+                    realized_profit = stock_sells.iloc[-1]['Realized_Profit'] - stock_sells.iloc[0]['Realized_Profit']
+                    message += f"     Realized profit: ${realized_profit:.2f}\n"
+
+                # List individual sell orders
+                message += "     Transactions:\n"
+                for _, row in stock_sells.iterrows():
+                    pst_time = row['Date_PST_Str']
+                    message += f"     - {pst_time}: {row['Shares']} shares @ ${row['Price']:.2f} (${row['Shares'] * row['Price']:.2f})\n"
+                    message += f"       Reason: {row['Reason']}\n"
+
+    # Get the latest snapshot for current positions
+    snapshot_df = portfolio.snapshot_log_df()
+    if not snapshot_df.empty:
+        latest_snapshot = snapshot_df.iloc[-1]
+
+        message += "\n🏦 CURRENT PORTFOLIO STATUS\n"
+        message += f"Timestamp: {latest_snapshot['Date_PST_Str']}\n"
+        message += f"Total Balance: ${latest_snapshot['Total_Balance']:.2f}\n"
+        message += f"Total Equity: ${latest_snapshot['Total_Equity']:.2f}\n"
+        message += f"Total Realized Profit: ${latest_snapshot['Total_Realized_Profit']:.2f}\n\n"
+
+        message += "CURRENT POSITIONS:\n"
+        # Get all columns that start with "Position_"
+        position_columns = [col for col in latest_snapshot.index if col.startswith("Position_")]
+        price_columns = [col for col in latest_snapshot.index if col.startswith("Price_")]
+
+        for pos_col in position_columns:
+            ticker = pos_col.replace("Position_", "")
+            price_col = f"Price_{ticker}"
+
+            position = latest_snapshot[pos_col]
+            if position > 0:
+                price = latest_snapshot[price_col]
+                value = position * price
+                message += f"  {ticker}: {position} shares @ ${price:.2f} = ${value:.2f}\n"
+
+    return message
 
 
 # Main execution block
 if __name__ == "__main__":
-    # Define file paths
+    # Define file paths for saving logs
     combined_log_path = "combined_trade_log.csv"
     snapshot_log_path = "snapshot_trade_log.csv"
 
@@ -669,10 +602,7 @@ if __name__ == "__main__":
     total_capital = 100000  # Set according to actual capital
     portfolio = SynchronizedPortfolio(total_capital=total_capital)
 
-    # Check for existing log files
-    existing_logs_exist = os.path.exists(combined_log_path) and os.path.exists(snapshot_log_path)
-
-    # First add all accounts to the portfolio
+    # Add all accounts to the portfolio
     for idx, row in filtered_results.iterrows():
         ticker = row['Stock']
         strategy_type = row['Chosen Strategy'].lower().strip()  # 'trend' or 'range'
@@ -682,23 +612,8 @@ if __name__ == "__main__":
         # Get the date range for fetching data
         now = datetime.now()
         end_date = (now + timedelta(days=1)).strftime("%Y-%m-%d")
-
-        # If we have existing logs, fetch data from a bit before the last date
-        # to ensure we have enough data for technical indicators
-        if existing_logs_exist:
-            # Load the last processed date to determine the start date for new data
-            try:
-                existing_combined = pd.read_csv(combined_log_path)
-                existing_combined['Date'] = pd.to_datetime(existing_combined['Date'])
-                last_date = existing_combined['Date'].max()
-                # Get data from 60 days before the last date to ensure proper indicator calculation
-                start_date = (last_date - timedelta(days=60)).strftime("%Y-%m-%d")
-            except Exception as e:
-                print(f"Error determining start date from logs: {e}")
-                start_date = "2025-03-13"  # Default start date
-        else:
-            # If no existing logs, use a fixed start date
-            start_date = "2025-03-13"
+        # Use a fixed start date or adjust as needed
+        start_date = (now - timedelta(days=7)).strftime("%Y-%m-%d")  # Get 7 days of data
 
         print(f"Fetching data for {ticker} from {start_date} to {end_date}")
 
@@ -711,43 +626,21 @@ if __name__ == "__main__":
         portfolio.add_account(ticker, strategy_type, best_params, df, allocation_pct)
         print(f"Added {ticker}: strategy={strategy_type}, Allocation={allocation_pct}%")
 
-    # If existing logs exist, load the portfolio state
-    start_from_last_date = False
-    if existing_logs_exist:
-        print("Loading portfolio state from existing logs...")
-        if portfolio.load_from_existing_logs(combined_log_path, snapshot_log_path):
-            start_from_last_date = True
-            print("Successfully loaded portfolio state from existing logs.")
-        else:
-            print("Could not load portfolio state from existing logs. Starting fresh.")
+    # Run the portfolio simulation
+    portfolio.run()
 
-    # Run the portfolio with or without starting from the last date
-    portfolio.run(start_from_last_date=start_from_last_date)
+    # Save logs to CSV files
+    combined_log = portfolio.combined_trade_log()
+    combined_log.to_csv(combined_log_path, index=False)
+    print(f"✅ Combined trade log saved to {combined_log_path}")
 
-    # Append to or create new log files
-    try:
-        if existing_logs_exist and start_from_last_date:
-            new_combined_df, old_combined_df = portfolio.append_to_existing_logs(combined_log_path, snapshot_log_path)
-            print("✅ Appended new trades to existing log files")
-        else:
-            # Save as new files
-            combined_log = portfolio.combined_trade_log()
-            combined_log.to_csv(combined_log_path, index=False)
-            print(f"✅ Combined trade log saved to {combined_log_path}")
+    snapshot_df = portfolio.snapshot_log_df()
+    snapshot_df.to_csv(snapshot_log_path, index=False)
+    print(f"✅ Snapshot log saved to {snapshot_log_path}")
 
-            snapshot_df = portfolio.snapshot_log_df()
-            snapshot_df.to_csv(snapshot_log_path, index=False)
-            print(f"✅ Snapshot log saved to {snapshot_log_path}")
+    report_message = generate_trade_report(portfolio)
 
-            new_combined_df = combined_log
-            old_combined_df = pd.DataFrame()  # Empty DataFrame as there was no previous data
-    except Exception as e:
-        print(f"Error during file operations: {e}")
-        # In case of error, try to get the data directly from the portfolio
-        new_combined_df = portfolio.combined_trade_log()
-        old_combined_df = pd.DataFrame()  # Empty DataFrame on error
-
-    # Email configuration (replace smtp_password with your app-specific password)
+    # Email configuration
     from_addr = "ylzhao3377@gmail.com"
     to_addrs = ["zhaoyilin3377@gmail.com"]
     smtp_server = "smtp.gmail.com"
@@ -755,25 +648,17 @@ if __name__ == "__main__":
     smtp_user = "ylzhao3377@gmail.com"
     smtp_password = "pntr minq hlcb uikz"  # Recommend using app-specific password
 
-    # Create trimmed versions of the log files (last 200 rows only)
+    # Create trimmed versions of the log files (last 100 rows only)
     try:
         # For combined trade log
-        full_combined_log = pd.read_csv(combined_log_path)
-        trimmed_combined_log = full_combined_log.tail(100)  # Get last 100 rows
+        trimmed_combined_log = combined_log.tail(100)  # Get last 100 rows
         trimmed_combined_path = "combined_trade_log_latest.csv"
         trimmed_combined_log.to_csv(trimmed_combined_path, index=False)
 
         # For snapshot log
-        full_snapshot_log = pd.read_csv(snapshot_log_path)
-        trimmed_snapshot_log = full_snapshot_log.tail(20)  # Get last 20 rows
+        trimmed_snapshot_log = snapshot_df.tail(100)  # Get last 20 rows
         trimmed_snapshot_path = "snapshot_trade_log_latest.csv"
         trimmed_snapshot_log.to_csv(trimmed_snapshot_path, index=False)
-
-        # Initialize message to avoid reference errors below
-        message = ""
-
-        # Update the message to indicate these are trimmed files
-        message += "\nNote: The attached files contain only the latest records for space efficiency."
 
         # Use the trimmed files for email attachments
         attachments = [trimmed_combined_path, trimmed_snapshot_path]
@@ -784,186 +669,13 @@ if __name__ == "__main__":
         attachments = [combined_log_path, snapshot_log_path]
         print("⚠️ Using full log files for attachments due to error when trimming")
 
-    # Email subject and content
+    # Email subject
     now_pst = convert_to_pst(datetime.now()).strftime("%Y-%m-%d %H:%M:%S %Z")
-    subject = f"Strategy Update Results - {now_pst}"
+    subject = f"Trading Strategy Report - {now_pst}"
 
-    # Generate summary of new actions
-    message = ""
-
-    if existing_logs_exist and start_from_last_date and isinstance(old_combined_df, pd.DataFrame):
-        # Calculate the maximum timestamp from the old log file
-        old_combined_df['Date'] = pd.to_datetime(old_combined_df['Date'])
-        max_old_timestamp = old_combined_df['Date'].max().timestamp() if not old_combined_df.empty else 0
-
-        # Convert the date to a user-friendly format
-        if max_old_timestamp > 0:
-            last_date_obj = datetime.fromtimestamp(max_old_timestamp, pytz.UTC)
-            last_date_formatted = convert_to_pst(last_date_obj).strftime("%Y-%m-%d %H:%M:%S %Z")
-        else:
-            last_date_formatted = "previous run"
-
-        message = f"Portfolio updated with new trades since {last_date_formatted}.\n\n"
-
-        # Debug information
-        message += "DEBUG INFO:\n"
-        message += f"Last timestamp from previous logs: {max_old_timestamp}\n"
-
-        # Identify new actions (excluding the ones already in old_combined_df)
-        try:
-            # Create new DataFrame with only the new actions
-            new_combined_df['Date'] = pd.to_datetime(new_combined_df['Date'])
-
-            # Get only the truly new records (those not in old_combined_df)
-            if not old_combined_df.empty:
-                # Convert dates to Unix timestamps for reliable comparison
-                new_combined_df['unix_timestamp'] = new_combined_df['Date'].apply(lambda x: x.timestamp())
-
-                # Find all entries in new_combined_df that have timestamps after max_old_timestamp
-                new_actions = new_combined_df[new_combined_df['unix_timestamp'] > max_old_timestamp]
-
-                # Add more debug info
-                message += f"Number of entries in new log: {len(new_combined_df)}\n"
-                message += f"Number of entries with timestamp > {max_old_timestamp}: {len(new_actions)}\n"
-
-                # List all timestamps for debugging
-                if len(new_combined_df) < 20:  # Only if the list is manageable
-                    message += "All timestamps in new log (Unix format):\n"
-                    for ts in sorted(new_combined_df['unix_timestamp'].unique()):
-                        date_str = datetime.fromtimestamp(ts, pytz.UTC)
-                        message += f"- {ts} ({date_str})\n"
-            else:
-                new_actions = new_combined_df
-                message += "No previous log entries found - treating all actions as new.\n"
-
-            # Filter for only actual trades
-            all_actions = new_actions.copy()
-            new_actions = new_actions[new_actions['Action'].isin(['BUY', 'SELL'])]
-
-            message += f"Total new actions: {len(all_actions)}\n"
-            message += f"New trade actions (BUY/SELL only): {len(new_actions)}\n\n"
-
-            # List all actions
-            if len(all_actions) < 20:  # Only if the list is manageable
-                message += "All new actions:\n"
-                for idx, row in all_actions.iterrows():
-                    action_time = pd.to_datetime(row['Date']).timestamp()
-                    message += f"- {row['Stock']}: {row['Action']} @ {action_time} ({row['Date']})\n"
-                message += "\n"
-
-            # Build summary message
-            if len(new_actions) > 0:
-                message += "TRADE SUMMARY:\n"
-                message += "==============\n\n"
-
-                # Summarize by stock and action type
-                stocks = new_actions['Stock'].unique()
-                for stock in stocks:
-                    stock_actions = new_actions[new_actions['Stock'] == stock]
-                    message += f"📊 {stock}:\n"
-
-                    # Buy actions
-                    buys = stock_actions[stock_actions['Action'] == 'BUY']
-                    if len(buys) > 0:
-                        total_bought = buys['Shares'].sum()
-                        avg_price = buys['Price'].mean()
-                        total_value = (buys['Shares'] * buys['Price']).sum()
-                        message += f"   🟢 BUY: {len(buys)} orders, {total_bought} shares @ avg ${avg_price:.2f} (${total_value:.2f} total)\n"
-
-                    # Sell actions
-                    sells = stock_actions[stock_actions['Action'] == 'SELL']
-                    if len(sells) > 0:
-                        total_sold = sells['Shares'].sum()
-                        avg_price = sells['Price'].mean()
-                        total_value = (sells['Shares'] * sells['Price']).sum()
-                        message += f"   🔴 SELL: {len(sells)} orders, {total_sold} shares @ avg ${avg_price:.2f} (${total_value:.2f} total)\n"
-
-                        # Only add realized profit info if we have sell orders
-                        try:
-                            if 'Realized_Profit' in sells.columns and len(sells) > 0:
-                                first_profit = sells['Realized_Profit'].iloc[0] if not pd.isna(
-                                    sells['Realized_Profit'].iloc[0]) else 0
-                                last_profit = sells['Realized_Profit'].iloc[-1] if not pd.isna(
-                                    sells['Realized_Profit'].iloc[-1]) else 0
-                                realized_profit = last_profit - first_profit
-                                if realized_profit != 0:
-                                    message += f"   💰 Realized profit in this period: ${realized_profit:.2f}\n"
-                        except Exception as e:
-                            message += f"   ⚠️ Could not calculate realized profit: {str(e)}\n"
-
-                    # Current position
-                    try:
-                        current_entries = new_combined_df[new_combined_df['Stock'] == stock]
-                        if not current_entries.empty:
-                            final_position = current_entries.iloc[-1]['Position']
-                            final_price = current_entries.iloc[-1]['Price']
-                            current_value = final_position * final_price
-                            message += f"   📈 Current position: {final_position} shares @ ${final_price:.2f} (${current_value:.2f})\n\n"
-                    except Exception as e:
-                        message += f"   ⚠️ Could not determine current position: {str(e)}\n\n"
-
-                # Overall portfolio summary
-                try:
-                    snapshot_df = portfolio.snapshot_log_df()
-                    if not snapshot_df.empty:
-                        last_snapshot = snapshot_df.iloc[-1]
-                        total_balance = last_snapshot['Total_Balance']
-                        total_equity = last_snapshot['Total_Equity']
-                        message += f"PORTFOLIO SUMMARY:\n"
-                        message += f"Total Balance: ${total_balance:.2f}\n"
-                        message += f"Total Equity: ${total_equity:.2f}\n\n"
-                except Exception as e:
-                    message += f"⚠️ Could not generate portfolio summary: {str(e)}\n\n"
-            else:
-                message += "No new trades were executed in this update period.\n\n"
-
-                # Still add portfolio summary
-                try:
-                    snapshot_df = portfolio.snapshot_log_df()
-                    if not snapshot_df.empty:
-                        last_snapshot = snapshot_df.iloc[-1]
-                        total_balance = last_snapshot['Total_Balance']
-                        total_equity = last_snapshot['Total_Equity']
-                        message += f"PORTFOLIO SUMMARY:\n"
-                        message += f"Total Balance: ${total_balance:.2f}\n"
-                        message += f"Total Equity: ${total_equity:.2f}\n\n"
-                except Exception as e:
-                    message += f"⚠️ Could not generate portfolio summary: {str(e)}\n\n"
-        except Exception as e:
-            message += f"⚠️ Error generating trade summary: {str(e)}\n\n"
-
-            # Add basic portfolio summary even if there's an error
-            try:
-                snapshot_df = portfolio.snapshot_log_df()
-                if not snapshot_df.empty:
-                    last_snapshot = snapshot_df.iloc[-1]
-                    total_balance = last_snapshot['Total_Balance']
-                    total_equity = last_snapshot['Total_Equity']
-                    message += f"PORTFOLIO SUMMARY:\n"
-                    message += f"Total Balance: ${total_balance:.2f}\n"
-                    message += f"Total Equity: ${total_equity:.2f}\n\n"
-            except:
-                pass
-    else:
-        message = "New portfolio simulation completed.\n\n"
-
-        # Add portfolio summary for new simulations too
-        try:
-            snapshot_df = portfolio.snapshot_log_df()
-            if not snapshot_df.empty:
-                last_snapshot = snapshot_df.iloc[-1]
-                total_balance = last_snapshot['Total_Balance']
-                total_equity = last_snapshot['Total_Equity']
-                message += f"PORTFOLIO SUMMARY:\n"
-                message += f"Total Balance: ${total_balance:.2f}\n"
-                message += f"Total Equity: ${total_equity:.2f}\n\n"
-        except Exception as e:
-            message += f"⚠️ Could not generate portfolio summary: {str(e)}\n\n"
-
-    message += "Please find attached the combined_trade_log.csv and snapshot_trade_log.csv files."
-
-    # Send email with attachments
-    EmailNotifier.send_email(subject, message, from_addr, to_addrs, smtp_server, smtp_port, smtp_user, smtp_password,
+    # Send email with report and attachments
+    EmailNotifier.send_email(subject, report_message, from_addr, to_addrs, smtp_server, smtp_port, smtp_user,
+                             smtp_password,
                              attachments)
 
     # Clean up the trimmed files after sending email

@@ -380,4 +380,4 @@ if __name__ == "__main__":
                    "GOOGL", "AAPL", "AVGO", "KO", "SPY", "VRT", "AMD", "COST", "UBER",
                    "JNJ", "JPM", 'MSFT', "ASML", "BRK.B", "CRWD", "PYPL", "SBUX",
                    "DIS", "AXP", "ROKU", "COIN", "SHOP", "INTC", "LULU", "PANW"]
-    batch_backtest(ticker_list, result_file='strategy_results.csv', n_trials=30, verbose=False)
+    batch_backtest(ticker_list, result_file='strategy_results.csv', n_trials=50, verbose=False)
