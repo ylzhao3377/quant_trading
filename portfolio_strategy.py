@@ -746,7 +746,7 @@ def generate_trade_report(portfolio, hours=96):
 # Main execution block
 if __name__ == "__main__":
     # Define fixed start date when the strategy actually begins taking actions
-    strategy_start_date = datetime(2024, 3, 15)  # March 13, 2025
+    strategy_start_date = datetime(2025, 3, 15)  # March 13, 2025
 
     # Define file paths for saving logs
     combined_log_path = "combined_trade_log.csv"
