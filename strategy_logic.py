@@ -221,7 +221,13 @@ def run_trend_sell_logic(account, row, params):
 
 def run_range_sell_logic(account, row, params):
     """
-    Execute sell logic for range trading strategy with trailing stop loss.
+    Execute sell logic for range trading strategy with dynamic trailing stop loss.
+
+    Phased selling approach:
+    1. Initial Breakout Sell: Sell 1/3 of position when price first breaks upper Bollinger Band
+    2. Continued Uptrend Sell: Sell 1/2 of remaining position as price continues higher
+    3. Trailing Stop: Only activate trailing stop when price has peaked and starts dropping
+       - Trailing stop level is max(middle_band, peak_price * trailing_stop_pct)
 
     Args:
         account (object): Trading account with position and balance information
@@ -242,33 +248,70 @@ def run_range_sell_logic(account, row, params):
     breakout_strength = 1 / (1 + np.exp(-k * (abs(z_score) - c)))
     min_rise_pct = params.get("min_rise_pct", 0.02)
     min_strength = params.get("min_strength", 0.3)
-    init_bal = params.get("initial_balance", 10000)
-    max_lot_value = init_bal / 5
-
-    # Get trailing stop percentage (default to 95% like in trend strategy)
     trailing_stop_pct = params.get("trailing_stop_pct", 0.95)
+
+    # Initialize tracking attributes if they don't exist
+    if not hasattr(account, 'peak_price'):
+        account.peak_price = None
+
+    if not hasattr(account, 'price_peaked'):
+        account.price_peaked = False
+
+    if not hasattr(account, 'breakout_sell_done'):
+        account.breakout_sell_done = False
+
+    if not hasattr(account, 'initial_position_size'):
+        account.initial_position_size = account.position
+
+    # Update peak price tracking logic
+    if account.last_sell_price is not None:
+        # If we have a new high after selling has started
+        if account.peak_price is None or price > account.peak_price:
+            account.peak_price = price
+            account.price_peaked = False  # Reset peaked flag when setting a new peak
+        # If price has dropped from peak by a small margin, mark as peaked
+        elif price < account.peak_price * 0.99 and not account.price_peaked:
+            account.price_peaked = True
 
     # Sell logic
     if account.position > 0:
         sell_shares = 0
         reason = ""
 
-        # Case 1: Sell on upper band breakout (existing logic)
-        if price > upper_band and breakout_strength >= min_strength:
-            if account.last_sell_price is None or price > account.last_sell_price * (1 + min_rise_pct):
-                sell_value = min(max_lot_value * breakout_strength, account.position * price)
-                sell_shares = int(sell_value / price)
-                reason = f"Sell on break upper (Z={z_score:.2f}, Strength={breakout_strength:.2f})"
+        # Case 1: Initial Breakout Sell - 1/3 of position
+        if price > upper_band and breakout_strength >= min_strength and not account.breakout_sell_done:
+            # Calculate 1/3 of initial position
+            if account.initial_position_size == 0:  # Safeguard
+                account.initial_position_size = account.position
 
-        # Case 2: NEW Trailing Stop Loss Logic based on last sell price
-        elif account.last_sell_price is not None:
-            # Calculate trailing stop price based on the last sell price
-            trailing_stop_price = account.last_sell_price * trailing_stop_pct
+            one_third_position = int(account.initial_position_size / 3)
+            if one_third_position > 0:
+                sell_shares = min(one_third_position, account.position)
+                reason = f"Initial breakout sell (1/3 of position) - (Z={z_score:.2f}, Strength={breakout_strength:.2f})"
+                account.breakout_sell_done = True
+
+        # Case 2: Continued Uptrend Sell - 1/2 of remaining position
+        elif price > upper_band and breakout_strength >= min_strength and account.breakout_sell_done:
+            # Only trigger if price has risen significantly from last sell
+            if account.last_sell_price is not None and price > account.last_sell_price * (1 + min_rise_pct):
+                # Calculate 1/2 of remaining position
+                half_remaining = int(account.position / 2)
+                if half_remaining > 0:
+                    sell_shares = half_remaining
+                    reason = f"Continued uptrend sell (1/2 of remaining) - New high ${price:.2f}"
+
+        # Case 3: Trailing Stop Logic - ONLY activated after price has peaked and started to drop
+        elif account.peak_price is not None and account.price_peaked:
+            # Calculate trailing stop price based on peak price, with middle band as floor
+            trailing_stop_price = max(account.peak_price * trailing_stop_pct, middle_band)
 
             # Check if trailing stop is triggered
             if price <= trailing_stop_price:
-                sell_shares = account.position  # Sell entire position
-                reason = f"Trailing stop triggered ({trailing_stop_pct * 100}% of last sell ${account.last_sell_price:.2f})"
+                sell_shares = account.position  # Sell entire remaining position
+                if trailing_stop_price == middle_band:
+                    reason = f"Trailing stop at middle band (${middle_band:.2f})"
+                else:
+                    reason = f"Trailing stop triggered ({trailing_stop_pct * 100:.0f}% of peak ${account.peak_price:.2f})"
 
         # Execute the sell if shares to sell > 0
         if sell_shares > 0:
@@ -302,20 +345,23 @@ def run_range_sell_logic(account, row, params):
             if account.position == 0:
                 account.last_buy_price = None
                 account.last_sell_price = None
+                account.peak_price = None
+                account.price_peaked = False
+                account.breakout_sell_done = False
+                account.initial_position_size = 0
 
             return {
                 "Date": date,
                 "Action": "SELL",
-                "Reason": reason,
                 "Price": price,
                 "Shares": sell_shares,
                 "Balance": account.balance,
                 "Position": account.position,
-                "Realized_Profit": account.realized_profit
+                "Realized_Profit": account.realized_profit,
+                "Reason": reason
             }
 
     return None
-
 
 # ----------------------------------------
 # Performance Metrics

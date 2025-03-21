@@ -151,54 +151,39 @@ def optimize_strategy(df, ticker, strategy_type='trend', n_trials=50, initial_ba
         best_trial = pareto_trials[best_index]
         best_params = best_trial.params
 
+        # Directly use the values from the best trial
+        roi = best_roi
+        max_dd = mdd_values[best_index]
+        sharpe = sharpe_values[best_index]
+
         print(f"\n🔍 Selected parameters with highest ROI ({best_roi:.2f}%) while meeting risk criteria:")
-        print(f"   Max Drawdown: {mdd_values[best_index]:.2f}%, Sharpe Ratio: {sharpe_values[best_index]:.2f}")
-    else:
-        # If no trials meet the strict criteria, fall back to the original weighted scoring method
-        print("\n⚠️ No trials meet strict risk criteria (max_dd >= -20% AND Sharpe >= 2)")
-        print("   Falling back to weighted scoring method...")
+        print(f"   Max Drawdown: {max_dd:.2f}%, Sharpe Ratio: {sharpe:.2f}")
 
-        # Normalize metrics for comparable scaling
-        roi_norm = (roi_values - roi_values.min()) / (roi_values.max() - roi_values.min() + 1e-8)
-        sharpe_norm = (sharpe_values - sharpe_values.min()) / (sharpe_values.max() - sharpe_values.min() + 1e-8)
-        mdd_norm = (mdd_values.max() - mdd_values) / (mdd_values.max() - mdd_values.min() + 1e-8)  # Reverse for MDD
+        # Run a verification backtest just to generate the trade log for saving
+        verification_portfolio = SynchronizedPortfolio(total_capital=initial_balance)
+        verification_portfolio.add_account("TUNE", strategy_type, best_params, df, allocation_pct=100)
+        verification_portfolio.run()
+        trade_log_df = verification_portfolio.combined_trade_log()
 
-        # Calculate composite score with custom weights
-        weights = [0.7, 0.2, 0.1]  # ROI: 70%, Sharpe: 20%, MDD: 10%
-        scores = weights[0] * roi_norm + weights[1] * sharpe_norm + weights[2] * mdd_norm
+        # Convert dates to PST
+        trade_log_df['Date'] = pd.to_datetime(trade_log_df['Date'])
+        trade_log_df['Date_PST'] = trade_log_df['Date'].apply(convert_to_pst)
+        trade_log_df['Date_PST_Str'] = trade_log_df['Date_PST'].dt.strftime('%Y-%m-%d %H:%M:%S %Z')
 
-        # Select best parameter set by composite score
-        best_index = np.argmax(scores)
-        best_trial = pareto_trials[best_index]
-        best_params = best_trial.params
+        # Current time in PST for log messages
+        now_pst = convert_to_pst(datetime.now()).strftime("%Y-%m-%d %H:%M:%S %Z")
 
-    # Verify performance with best parameters
-    portfolio = SynchronizedPortfolio(total_capital=initial_balance)
-    portfolio.add_account("TUNE", strategy_type, best_params, df, allocation_pct=100)
-    portfolio.run()
-    trade_log_df = portfolio.combined_trade_log()
+        print(f"\n🎯 [Best Combined Solution] - {now_pst}")
+        print(f"Parameters: {best_params}")
+        print(f"ROI: {roi:.2f}%, Max Drawdown: {max_dd:.2f}%, Sharpe Ratio: {sharpe:.2f}")
 
-    # Convert dates to PST
-    trade_log_df['Date'] = pd.to_datetime(trade_log_df['Date'])
-    trade_log_df['Date_PST'] = trade_log_df['Date'].apply(convert_to_pst)
-    trade_log_df['Date_PST_Str'] = trade_log_df['Date_PST'].dt.strftime('%Y-%m-%d %H:%M:%S %Z')
+        # Save trade log
+        output_dir = 'output'
+        os.makedirs(output_dir, exist_ok=True)
+        trade_log_df.to_csv(f'{output_dir}/{ticker}-{strategy_type}-tuning.csv', index=False)
+        print(f"✅ {ticker} best strategy trade log saved to {output_dir}/{ticker}-{strategy_type}-tuning.csv")
 
-    roi, max_dd, sharpe = compute_metrics(trade_log_df, initial_balance=initial_balance)
-
-    # Current time in PST for log messages
-    now_pst = convert_to_pst(datetime.now()).strftime("%Y-%m-%d %H:%M:%S %Z")
-
-    print(f"\n🎯 [Best Combined Solution] - {now_pst}")
-    print(f"Parameters: {best_params}")
-    print(f"ROI: {roi:.2f}%, Max Drawdown: {max_dd:.2f}%, Sharpe Ratio: {sharpe:.2f}")
-
-    # Save trade log
-    output_dir = 'output'
-    os.makedirs(output_dir, exist_ok=True)
-    trade_log_df.to_csv(f'{output_dir}/{ticker}-{strategy_type}-tuning.csv', index=False)
-    print(f"✅ {ticker} best strategy trade log saved to {output_dir}/{ticker}-{strategy_type}-tuning.csv")
-
-    return best_params, roi, max_dd, sharpe, pareto_trials
+        return best_params, roi, max_dd, sharpe, pareto_trials
 
 
 def batch_backtest(ticker_list, result_file='strategy_results.csv', n_trials=50, verbose=False):

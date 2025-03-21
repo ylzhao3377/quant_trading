@@ -154,6 +154,7 @@ class SynchronizedPortfolio:
         self.accounts = {}  # {ticker: {'account': SubAccount, 'data': DataFrame}}
         self.trade_log = []
         self.snapshot_log = []
+        self.last_date = None  # Track the last processed date
 
     def add_account(self, name, strategy_type, params, df, allocation_pct):
         """
@@ -195,16 +196,177 @@ class SynchronizedPortfolio:
 
         self.accounts[name] = {'account': account, 'data': df}
 
-    def run(self):
+    def save_state(self, state_file='portfolio_state.pkl'):
+        """
+        Save portfolio state to a pickle file for future runs.
+
+        Args:
+            state_file (str): Path to save the state file
+
+        Returns:
+            bool: True if state was successfully saved
+        """
+        try:
+            # Create a state dictionary with all necessary information
+            state = {
+                'last_date': self.last_date,
+                'capital_pool': {
+                    'total_capital': self.capital_pool.total_capital,
+                    'available_capital': self.capital_pool.available_capital
+                },
+                'trade_log': self.trade_log,
+                'snapshot_log': self.snapshot_log,
+                'accounts': {}
+            }
+
+            # Save state of each account
+            for name, data in self.accounts.items():
+                account = data['account']
+                account_state = {
+                    'name': name,
+                    'strategy_type': account.strategy_type,
+                    'allocation_pct': account.allocation_pct,
+                    'balance': account.balance,
+                    'realized_profit': account.realized_profit,
+                    'last_price': account.last_price,
+                    'params': account.params
+                }
+
+                # Add strategy-specific attributes
+                if account.strategy_type == 'trend':
+                    account_state.update({
+                        'in_position': account.in_position,
+                        'position': account.position,
+                        'entry_price': account.entry_price,
+                        'max_profit_price': account.max_profit_price
+                    })
+                elif account.strategy_type == 'range':
+                    account_state.update({
+                        'position': account.position,
+                        'entry_prices': account.entry_prices,
+                        'last_buy_price': account.last_buy_price,
+                        'last_sell_price': account.last_sell_price
+                    })
+
+                state['accounts'][name] = account_state
+
+            # Save to pickle file
+            import pickle
+            with open(state_file, 'wb') as f:
+                pickle.dump(state, f)
+
+            print(f"✅ Portfolio state saved to {state_file}")
+            return True
+
+        except Exception as e:
+            print(f"❌ Error saving portfolio state: {e}")
+            return False
+
+    def load_state(self, state_file='portfolio_state.pkl'):
+        """
+        Load portfolio state from a pickle file.
+
+        Args:
+            state_file (str): Path to the state file
+
+        Returns:
+            bool: True if state was successfully loaded
+        """
+        if not os.path.exists(state_file):
+            print(f"❌ State file {state_file} does not exist. Starting with fresh state.")
+            return False
+
+        try:
+            # Load from pickle file
+            import pickle
+            with open(state_file, 'rb') as f:
+                state = pickle.load(f)
+
+            # Restore portfolio state
+            self.last_date = state['last_date']
+            self.trade_log = state['trade_log']
+            self.snapshot_log = state['snapshot_log']
+
+            # Restore capital pool
+            self.capital_pool.total_capital = state['capital_pool']['total_capital']
+            self.capital_pool.available_capital = state['capital_pool']['available_capital']
+
+            # Restore accounts that exist in both the saved state and current portfolio
+            for name, account_state in state['accounts'].items():
+                if name in self.accounts:
+                    account = self.accounts[name]['account']
+
+                    # Update basic account properties
+                    account.balance = account_state['balance']
+                    account.realized_profit = account_state['realized_profit']
+                    account.last_price = account_state['last_price']
+
+                    # Update strategy parameters
+                    account.params = account_state['params']
+
+                    # Update strategy-specific attributes
+                    if account.strategy_type == 'trend':
+                        account.in_position = account_state['in_position']
+                        account.position = account_state['position']
+                        account.entry_price = account_state['entry_price']
+                        account.max_profit_price = account_state['max_profit_price']
+                    elif account.strategy_type == 'range':
+                        account.position = account_state['position']
+                        account.entry_prices = account_state['entry_prices']
+                        account.last_buy_price = account_state['last_buy_price']
+                        account.last_sell_price = account_state['last_sell_price']
+
+                    print(f"✅ Restored state for {name} account")
+                else:
+                    print(f"⚠️ Account {name} from saved state not found in current portfolio")
+
+            print(f"✅ Portfolio state loaded from {state_file}")
+            return True
+
+        except Exception as e:
+            print(f"❌ Error loading portfolio state: {e}")
+            return False
+
+    def update_params(self, name, new_params):
+        """
+        Update strategy parameters for an account.
+
+        Args:
+            name (str): Account name
+            new_params (dict): New strategy parameters
+
+        Returns:
+            bool: True if parameters were successfully updated
+        """
+        if name in self.accounts:
+            self.accounts[name]['account'].params = new_params
+            print(f"✅ Updated parameters for {name}")
+            return True
+        else:
+            print(f"❌ Account {name} not found in portfolio")
+            return False
+
+    def run(self, start_from_last_date=True):
         """
         Run the portfolio simulation across all accounts.
-        Always starts fresh (no dependency on previous runs).
+
+        Args:
+            start_from_last_date (bool): If True, only process data after the last date in the logs
         """
         # Build unified timeline by merging all datetime columns
         all_times = sorted(set().union(*[set(data['data']['datetime']) for data in self.accounts.values()]))
 
+        # Filter for dates after the last processed date if requested
+        if start_from_last_date and self.last_date is not None:
+            all_times = [dt for dt in all_times if dt > self.last_date]
+            print(f"Processing only new data from {self.last_date} onward")
+        # If we have a strategy start date defined, filter for dates after it
+        elif hasattr(self, 'strategy_start_date'):
+            all_times = [dt for dt in all_times if dt >= self.strategy_start_date]
+            print(f"Processing only data from strategy start date {self.strategy_start_date} onward")
+
         if not all_times:
-            print("No data to process.")
+            print("No new data to process.")
             return
 
         print(f"Processing {len(all_times)} time points from {all_times[0]} to {all_times[-1]}")
@@ -583,9 +745,13 @@ def generate_trade_report(portfolio, hours=96):
 
 # Main execution block
 if __name__ == "__main__":
+    # Define fixed start date when the strategy actually begins taking actions
+    strategy_start_date = datetime(2024, 3, 15)  # March 13, 2025
+
     # Define file paths for saving logs
     combined_log_path = "combined_trade_log.csv"
     snapshot_log_path = "snapshot_trade_log.csv"
+    state_file = "portfolio_state.pkl"
 
     # Main process: Read strategy results and build portfolio
     results_df = pd.read_csv("strategy_results.csv")
@@ -602,6 +768,9 @@ if __name__ == "__main__":
     total_capital = 100000  # Set according to actual capital
     portfolio = SynchronizedPortfolio(total_capital=total_capital)
 
+    # Try to load previous state
+    previous_state_loaded = portfolio.load_state(state_file)
+
     # Add all accounts to the portfolio
     for idx, row in filtered_results.iterrows():
         ticker = row['Stock']
@@ -610,35 +779,100 @@ if __name__ == "__main__":
         allocation_pct = float(row['Allocation (%)'])
 
         # Get the date range for fetching data
-        now = datetime.now()
-        end_date = (now + timedelta(days=1)).strftime("%Y-%m-%d")
-        # Use a fixed start date or adjust as needed
-        start_date = (now - timedelta(days=7)).strftime("%Y-%m-%d")  # Get 7 days of data
+        # Always fetch data starting from 100 days before strategy start date
+        # to properly calculate indicators
+        start_date = (strategy_start_date - timedelta(days=100)).strftime("%Y-%m-%d")
+
+        # Always fetch data up to the current date to ensure we have the latest information
+        end_date = datetime.now().strftime("%Y-%m-%d")
 
         print(f"Fetching data for {ticker} from {start_date} to {end_date}")
 
-        # Use fetch_stock_data from simple_strategy.py
+        # Use fetch_stock_data from strategy_logic.py
         df = fetch_stock_data(ticker, start_date, end_date, "hour")
         if df.empty:
             print(f"{ticker} has no data, skipping.")
             continue
 
-        portfolio.add_account(ticker, strategy_type, best_params, df, allocation_pct)
+        # Filter data to only include rows from strategy_start_date onwards for decision making
+        # But keep all data for indicator calculation
+        df_for_indicators = df.copy()
+
+        # Add account with properly calculated indicators
+        portfolio.add_account(ticker, strategy_type, best_params, df_for_indicators, allocation_pct)
         print(f"Added {ticker}: strategy={strategy_type}, Allocation={allocation_pct}%")
 
-    # Run the portfolio simulation
-    portfolio.run()
+    # Run the portfolio simulation - make sure it only processes dates after strategy_start_date
+    if previous_state_loaded:
+        # If continuing from previous state, start from last processed date
+        portfolio.run(start_from_last_date=True)
+    else:
+        # If starting fresh, manually set a filter to only take action from strategy_start_date
+        # Modify the portfolio.run method to respect this date
+        portfolio.strategy_start_date = strategy_start_date
+        portfolio.run(start_from_last_date=False)
 
-    # Save logs to CSV files
+    # Save current state for future runs
+    portfolio.save_state(state_file)
+
+    # Save logs to CSV files (append mode)
     combined_log = portfolio.combined_trade_log()
-    combined_log.to_csv(combined_log_path, index=False)
-    print(f"✅ Combined trade log saved to {combined_log_path}")
+    if previous_state_loaded and os.path.exists(combined_log_path):
+        # If we loaded previous state, try to append to existing log without duplicates
+        try:
+            existing_log = pd.read_csv(combined_log_path)
+            existing_log['Date'] = pd.to_datetime(existing_log['Date'])
 
+            # Get max date from existing log
+            max_date = existing_log['Date'].max() if not existing_log.empty else pd.Timestamp.min
+
+            # Filter new log entries to avoid duplicates
+            combined_log['Date'] = pd.to_datetime(combined_log['Date'])
+            new_entries = combined_log[combined_log['Date'] > max_date]
+
+            # Append new entries to existing log
+            updated_log = pd.concat([existing_log, new_entries]).reset_index(drop=True)
+            updated_log.to_csv(combined_log_path, index=False)
+            print(f"✅ Appended new entries to combined trade log at {combined_log_path}")
+        except Exception as e:
+            print(f"❌ Error appending to existing log: {e}")
+            # Fallback to overwriting
+            combined_log.to_csv(combined_log_path, index=False)
+            print(f"✅ Combined trade log saved to {combined_log_path}")
+    else:
+        # Otherwise just save the log
+        combined_log.to_csv(combined_log_path, index=False)
+        print(f"✅ Combined trade log saved to {combined_log_path}")
+
+    # Do the same for snapshot log
     snapshot_df = portfolio.snapshot_log_df()
-    snapshot_df.to_csv(snapshot_log_path, index=False)
-    print(f"✅ Snapshot log saved to {snapshot_log_path}")
+    if previous_state_loaded and os.path.exists(snapshot_log_path):
+        try:
+            existing_snapshot = pd.read_csv(snapshot_log_path)
+            existing_snapshot['Date'] = pd.to_datetime(existing_snapshot['Date'])
 
-    report_message = generate_trade_report(portfolio)
+            # Get max date from existing log
+            max_date = existing_snapshot['Date'].max() if not existing_snapshot.empty else pd.Timestamp.min
+
+            # Filter new snapshot entries
+            snapshot_df['Date'] = pd.to_datetime(snapshot_df['Date'])
+            new_entries = snapshot_df[snapshot_df['Date'] > max_date]
+
+            # Append new entries
+            updated_snapshot = pd.concat([existing_snapshot, new_entries]).reset_index(drop=True)
+            updated_snapshot.to_csv(snapshot_log_path, index=False)
+            print(f"✅ Appended new entries to snapshot log at {snapshot_log_path}")
+        except Exception as e:
+            print(f"❌ Error appending to existing snapshot log: {e}")
+            # Fallback to overwriting
+            snapshot_df.to_csv(snapshot_log_path, index=False)
+            print(f"✅ Snapshot log saved to {snapshot_log_path}")
+    else:
+        snapshot_df.to_csv(snapshot_log_path, index=False)
+        print(f"✅ Snapshot log saved to {snapshot_log_path}")
+
+    # Generate 96-hour report (4 days)
+    report_message = generate_trade_report(portfolio, hours=96)
 
     # Email configuration
     from_addr = "ylzhao3377@gmail.com"
@@ -656,7 +890,7 @@ if __name__ == "__main__":
         trimmed_combined_log.to_csv(trimmed_combined_path, index=False)
 
         # For snapshot log
-        trimmed_snapshot_log = snapshot_df.tail(100)  # Get last 20 rows
+        trimmed_snapshot_log = snapshot_df.tail(20)  # Get last 20 rows
         trimmed_snapshot_path = "snapshot_trade_log_latest.csv"
         trimmed_snapshot_log.to_csv(trimmed_snapshot_path, index=False)
 
@@ -670,13 +904,12 @@ if __name__ == "__main__":
         print("⚠️ Using full log files for attachments due to error when trimming")
 
     # Email subject
-    now_pst = convert_to_pst(datetime.now()).strftime("%Y-%m-%d %H:%M:%S %Z")
-    subject = f"Trading Strategy Report - {now_pst}"
+    pst_time_str = convert_to_pst(strategy_start_date).strftime("%Y-%m-%d %H:%M:%S %Z")
+    subject = f"Trading Strategy Report - {pst_time_str}"
 
     # Send email with report and attachments
     EmailNotifier.send_email(subject, report_message, from_addr, to_addrs, smtp_server, smtp_port, smtp_user,
-                             smtp_password,
-                             attachments)
+                             smtp_password, attachments)
 
     # Clean up the trimmed files after sending email
     try:
