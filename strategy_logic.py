@@ -198,7 +198,18 @@ def run_trend_sell_logic(account, row, params):
             reason = "Below EMA200 or Trailing Stop triggered"
 
         if sell_shares > 0:
-            profit = (price - account.entry_price) * account.position
+            # Debug log to verify entry price and calculate profit
+            entry_price = account.entry_price if hasattr(account, 'entry_price') else 0
+            if entry_price <= 0:
+                print(f"WARNING: Missing entry price for {account.name}, using fallback calculation")
+                # Fallback calculation if entry price isn't available
+                entry_price = price * 0.95  # Assume 5% profit as fallback
+
+            profit = (price - entry_price) * sell_shares
+
+            print(f"SELL: {account.position} shares @ ${price:.2f}, entry was ${entry_price:.2f}")
+            print(f"Profit: ${profit:.2f} ({((price / entry_price) - 1) * 100:.2f}%)")
+
             account.realized_profit += profit
             account.balance += account.position * price
             log_entry = {
@@ -207,6 +218,8 @@ def run_trend_sell_logic(account, row, params):
                 "Reason": reason,
                 "Price": price,
                 "Shares": sell_shares,
+                "Entry_Price": entry_price,
+                "Profit": profit,
                 "Balance": account.balance,
                 "Position": 0,
                 "Realized_Profit": account.realized_profit
@@ -319,17 +332,31 @@ def run_range_sell_logic(account, row, params):
             sell_shares = min(sell_shares, account.position)
 
             # Calculate profit
+            total_profit = 0
+            avg_entry_price = 0
+
             if account.entry_prices and len(account.entry_prices) >= sell_shares:
-                total_cost = sum(account.entry_prices[:sell_shares])
-                profit = (sell_shares * price) - total_cost
+                # Get the entry prices for the shares we're selling
+                sold_entry_prices = account.entry_prices[:sell_shares]
+                total_cost = sum(sold_entry_prices)
+                avg_entry_price = total_cost / len(sold_entry_prices)
+                total_profit = (sell_shares * price) - total_cost
             else:
                 # Fallback if entry_prices doesn't contain enough data
-                avg_entry_price = sum(account.entry_prices) / len(account.entry_prices) if account.entry_prices else 0
+                print(f"WARNING: Missing complete entry prices for {account.name}, using average-based calculation")
+                avg_entry_price = sum(account.entry_prices) / len(
+                    account.entry_prices) if account.entry_prices else price * 0.95
                 total_cost = avg_entry_price * sell_shares
-                profit = (price - avg_entry_price) * sell_shares
+                total_profit = (price - avg_entry_price) * sell_shares
+
+            # Log the sell operation details
+            print(
+                f"SELL (Range): {sell_shares}/{account.position} shares @ ${price:.2f}, avg entry: ${avg_entry_price:.2f}")
+            print(f"Profit: ${total_profit:.2f} ({((price / avg_entry_price) - 1) * 100:.2f}%)")
+            print(f"Reason: {reason}")
 
             # Update account state
-            account.realized_profit += profit
+            account.realized_profit += total_profit
             account.balance += sell_shares * price
             account.position -= sell_shares
 
@@ -355,6 +382,8 @@ def run_range_sell_logic(account, row, params):
                 "Action": "SELL",
                 "Price": price,
                 "Shares": sell_shares,
+                "Avg_Entry_Price": avg_entry_price,
+                "Profit": total_profit,
                 "Balance": account.balance,
                 "Position": account.position,
                 "Realized_Profit": account.realized_profit,

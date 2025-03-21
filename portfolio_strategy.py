@@ -346,33 +346,40 @@ class SynchronizedPortfolio:
             print(f"❌ Account {name} not found in portfolio")
             return False
 
-    def run(self, start_from_last_date=True):
+    def run(self, start_from_last_date=False):
         """
         Run the portfolio simulation across all accounts.
 
         Args:
-            start_from_last_date (bool): If True, only process data after the last date in the logs
+            start_from_last_date (bool): Not used in this simplified version, kept for compatibility
         """
         # Build unified timeline by merging all datetime columns
-        all_times = sorted(set().union(*[set(data['data']['datetime']) for data in self.accounts.values()]))
+        all_times = []
+        for name, data in self.accounts.items():
+            all_times.extend(data['data']['datetime'].tolist())
 
-        # Filter for dates after the last processed date if requested
-        if start_from_last_date and self.last_date is not None:
-            all_times = [dt for dt in all_times if dt > self.last_date]
-            print(f"Processing only new data from {self.last_date} onward")
-        # If we have a strategy start date defined, filter for dates after it
-        elif hasattr(self, 'strategy_start_date'):
-            all_times = [dt for dt in all_times if dt >= self.strategy_start_date]
+        # Remove duplicates and sort
+        all_times = sorted(set(all_times))
+
+        # Filter for dates after the strategy start date
+        if hasattr(self, 'strategy_start_date'):
+            all_times = [dt for dt in all_times if pd.to_datetime(dt) >= self.strategy_start_date]
             print(f"Processing only data from strategy start date {self.strategy_start_date} onward")
+            print(f"Found {len(all_times)} time points from {all_times[0]} to {all_times[-1]}")
+        else:
+            print(f"Warning: No strategy start date defined, processing all {len(all_times)} time points")
 
         if not all_times:
-            print("No new data to process.")
+            print("No data to process.")
             return
 
-        print(f"Processing {len(all_times)} time points from {all_times[0]} to {all_times[-1]}")
         n_times = len(all_times)
 
         for i, current_time in enumerate(all_times):
+            # Display progress every 100 time points
+            if i % 100 == 0:
+                print(f"Processing time point {i + 1}/{n_times}: {current_time}")
+
             # Calculate pre-operation total balance
             pre_total_balance = self.capital_pool.status() + sum(
                 [data['account'].balance for data in self.accounts.values()])
@@ -392,11 +399,11 @@ class SynchronizedPortfolio:
                     # Record pre-operation position
                     if account.strategy_type == 'trend':
                         pre_position = account.position
-                        # Use the shared sell logic function from simple_strategy.py
+                        # Use the shared sell logic function from strategy_logic.py
                         log_entry = run_trend_sell_logic(account, row, account.params)
                     elif account.strategy_type == 'range':
                         pre_position = account.position
-                        # Use the shared sell logic function from simple_strategy.py
+                        # Use the shared sell logic function from strategy_logic.py
                         log_entry = run_range_sell_logic(account, row, account.params)
                     else:
                         log_entry = None
@@ -429,10 +436,10 @@ class SynchronizedPortfolio:
                     row = current_rows.iloc[0]
 
                     if account.strategy_type == 'trend' and not account.in_position:
-                        # Use the shared trend strength function from simple_strategy.py
+                        # Use the shared trend strength function from strategy_logic.py
                         strength = compute_trend_strength(row, account.params)
                         if strength > 0:
-                            valid_orders.append((account, row, strength))
+                            valid_orders.append((account, row, strength, name))
                             total_strength += strength
                     elif account.strategy_type == 'range':
                         if row['close'] < row['Lower']:
@@ -445,15 +452,14 @@ class SynchronizedPortfolio:
                                 # Check if this is a first buy or if price dropped further from last buy
                                 if account.last_buy_price is None or row['close'] < account.last_buy_price * (
                                         1 - min_drop_pct):
-                                    # Use the shared range strength function from simple_strategy.py
+                                    # Use the shared range strength function from strategy_logic.py
                                     strength = compute_range_strength(row, account.params)
                                     if strength >= account.params.get("min_strength", 0.3):
-                                        valid_orders.append((account, row, strength))
+                                        valid_orders.append((account, row, strength, name))
                                         total_strength += strength
 
             # Execute buy orders with weight-based allocation
-            for (account, row, strength) in valid_orders:
-                total_valid_orders = len(valid_orders)
+            for (account, row, strength, stock_name) in valid_orders:
                 weight = strength / total_strength if total_strength > 0 else 0
 
                 # Calculate total equity (sum of each account's cash balance + position value)
@@ -491,6 +497,10 @@ class SynchronizedPortfolio:
                         account.position = shares_to_buy
                         account.balance -= money_spent
                         account.in_position = True
+
+                        print(
+                            f"BUY: {stock_name} - {shares_to_buy} shares @ ${price:.2f} = ${money_spent:.2f} (Entry price recorded: ${account.entry_price:.2f})")
+
                         log_entry = {
                             "Date": row['datetime'],
                             "Action": "BUY",
@@ -508,6 +518,9 @@ class SynchronizedPortfolio:
                         account.entry_prices.extend([price] * shares_to_buy)
                         account.balance -= money_spent
                         account.last_buy_price = price  # Update the last buy price
+
+                        print(f"BUY: {stock_name} - {shares_to_buy} shares @ ${price:.2f} = ${money_spent:.2f}")
+
                         log_entry = {
                             "Date": row['datetime'],
                             "Action": "BUY",
@@ -520,7 +533,7 @@ class SynchronizedPortfolio:
                             "Pre_Total_Balance": pre_total_balance,
                             "Operation_Ratio": buy_ratio
                         }
-                    log_entry["Stock"] = account.name
+                    log_entry["Stock"] = stock_name
                     self.trade_log.append(log_entry)
                     account.trade_log.append(log_entry)
                     any_actions = True
@@ -695,23 +708,49 @@ def generate_trade_report(portfolio, hours=96):
                 message += f"     Avg price: ${avg_sell_price:.2f}\n"
                 message += f"     Total value: ${total_sell_value:.2f}\n"
 
-                # Realized profit
-                if len(stock_sells) > 0 and len(stock_buys) > 0:
-                    # Calculate realized profit directly from the transactions
-                    total_buy_cost = (stock_buys['Shares'] * stock_buys['Price']).sum()
-                    total_sell_value = (stock_sells['Shares'] * stock_sells['Price']).sum()
-                    realized_profit = total_sell_value - total_buy_cost
-                    message += f"     Realized profit: ${realized_profit:.2f}\n"
-                elif len(stock_sells) > 0:
-                    # Fallback to using the Realized_Profit column if available
+                # Realized profit - use our new calculation
+                total_realized_profit = 0
+
+                # First try to use direct Profit field if available
+                if 'Profit' in stock_sells.columns:
+                    total_realized_profit = stock_sells['Profit'].sum()
+                    message += f"     Realized profit: ${total_realized_profit:.2f}\n"
+                # Fallback to calculated from entry price if available
+                elif 'Entry_Price' in stock_sells.columns or 'Avg_Entry_Price' in stock_sells.columns:
+                    entry_price_col = 'Entry_Price' if 'Entry_Price' in stock_sells.columns else 'Avg_Entry_Price'
+                    for _, row in stock_sells.iterrows():
+                        if pd.notna(row.get(entry_price_col, np.nan)):
+                            shares = row['Shares']
+                            sell_price = row['Price']
+                            entry_price = row[entry_price_col]
+                            profit = (sell_price - entry_price) * shares
+                            total_realized_profit += profit
+                    message += f"     Realized profit: ${total_realized_profit:.2f}\n"
+                # Final fallback to Realized_Profit
+                elif 'Realized_Profit' in stock_sells.columns:
+                    # Get difference between first and last Realized_Profit value
                     realized_profit = stock_sells.iloc[-1]['Realized_Profit'] - stock_sells.iloc[0]['Realized_Profit']
                     message += f"     Realized profit: ${realized_profit:.2f}\n"
+                else:
+                    message += f"     Realized profit: Could not calculate - missing data\n"
 
                 # List individual sell orders
                 message += "     Transactions:\n"
                 for _, row in stock_sells.iterrows():
                     pst_time = row['Date_PST_Str']
                     message += f"     - {pst_time}: {row['Shares']} shares @ ${row['Price']:.2f} (${row['Shares'] * row['Price']:.2f})\n"
+
+                    # Add profit information if available
+                    if 'Profit' in row and pd.notna(row['Profit']):
+                        profit = row['Profit']
+                        message += f"       Profit: ${profit:.2f}\n"
+                    elif ('Entry_Price' in row and pd.notna(row['Entry_Price'])) or (
+                            'Avg_Entry_Price' in row and pd.notna(row['Avg_Entry_Price'])):
+                        entry_price_col = 'Entry_Price' if 'Entry_Price' in row else 'Avg_Entry_Price'
+                        entry_price = row[entry_price_col]
+                        profit = (row['Price'] - entry_price) * row['Shares']
+                        message += f"       Profit: ${profit:.2f} (Entry: ${entry_price:.2f})\n"
+
                     message += f"       Reason: {row['Reason']}\n"
 
     # Get the latest snapshot for current positions
@@ -742,7 +781,6 @@ def generate_trade_report(portfolio, hours=96):
 
     return message
 
-
 # Main execution block
 if __name__ == "__main__":
     # Define fixed start date when the strategy actually begins taking actions
@@ -751,7 +789,9 @@ if __name__ == "__main__":
     # Define file paths for saving logs
     combined_log_path = "combined_trade_log.csv"
     snapshot_log_path = "snapshot_trade_log.csv"
-    state_file = "portfolio_state.pkl"
+
+    print(f"Strategy start date: {strategy_start_date.strftime('%Y-%m-%d')}")
+    print("Always starting from clean state (no state preservation)")
 
     # Main process: Read strategy results and build portfolio
     results_df = pd.read_csv("strategy_results.csv")
@@ -762,14 +802,11 @@ if __name__ == "__main__":
         (results_df['Allocation (%)'] > 0)
         ]
 
-    print("Filtered results:")
-    print(filtered_results[['Stock', 'Chosen Strategy', 'Best Params', 'Allocation (%)']])
+    print("Eligible stocks for trading:")
+    print(filtered_results[['Stock', 'Chosen Strategy', 'Allocation (%)']])
 
     total_capital = 100000  # Set according to actual capital
     portfolio = SynchronizedPortfolio(total_capital=total_capital)
-
-    # Try to load previous state
-    previous_state_loaded = portfolio.load_state(state_file)
 
     # Add all accounts to the portfolio
     for idx, row in filtered_results.iterrows():
@@ -778,98 +815,44 @@ if __name__ == "__main__":
         best_params = ast.literal_eval(row['Best Params'])
         allocation_pct = float(row['Allocation (%)'])
 
-        # Get the date range for fetching data
-        # Always fetch data starting from 100 days before strategy start date
-        # to properly calculate indicators
+        # Always fetch data starting 100 days before strategy start date
+        # to ensure proper indicator calculation
         start_date = (strategy_start_date - timedelta(days=100)).strftime("%Y-%m-%d")
 
-        # Always fetch data up to the current date to ensure we have the latest information
+        # Always fetch up to current date for the most recent data
         end_date = datetime.now().strftime("%Y-%m-%d")
 
         print(f"Fetching data for {ticker} from {start_date} to {end_date}")
 
         # Use fetch_stock_data from strategy_logic.py
-        df = fetch_stock_data(ticker, start_date, end_date, "hour")
-        if df.empty:
-            print(f"{ticker} has no data, skipping.")
+        try:
+            df = fetch_stock_data(ticker, start_date, end_date, "hour")
+            if df.empty:
+                print(f"❌ {ticker} has no data, skipping.")
+                continue
+
+            # Add account with properly calculated indicators
+            portfolio.add_account(ticker, strategy_type, best_params, df, allocation_pct)
+            print(f"✅ Added {ticker}: strategy={strategy_type}, Allocation={allocation_pct}%")
+        except Exception as e:
+            print(f"❌ Error adding {ticker}: {e}")
             continue
 
-        # Filter data to only include rows from strategy_start_date onwards for decision making
-        # But keep all data for indicator calculation
-        df_for_indicators = df.copy()
+    # Set the strategy start date attribute so the run method knows when to start trading
+    portfolio.strategy_start_date = strategy_start_date
 
-        # Add account with properly calculated indicators
-        portfolio.add_account(ticker, strategy_type, best_params, df_for_indicators, allocation_pct)
-        print(f"Added {ticker}: strategy={strategy_type}, Allocation={allocation_pct}%")
+    # Run the portfolio simulation
+    print(f"Running simulation (trading starts from {strategy_start_date.strftime('%Y-%m-%d')})")
+    portfolio.run(start_from_last_date=False)
 
-    # Run the portfolio simulation - make sure it only processes dates after strategy_start_date
-    if previous_state_loaded:
-        # If continuing from previous state, start from last processed date
-        portfolio.run(start_from_last_date=True)
-    else:
-        # If starting fresh, manually set a filter to only take action from strategy_start_date
-        # Modify the portfolio.run method to respect this date
-        portfolio.strategy_start_date = strategy_start_date
-        portfolio.run(start_from_last_date=False)
-
-    # Save current state for future runs
-    portfolio.save_state(state_file)
-
-    # Save logs to CSV files (append mode)
+    # Save logs to CSV files (always overwrite)
     combined_log = portfolio.combined_trade_log()
-    if previous_state_loaded and os.path.exists(combined_log_path):
-        # If we loaded previous state, try to append to existing log without duplicates
-        try:
-            existing_log = pd.read_csv(combined_log_path)
-            existing_log['Date'] = pd.to_datetime(existing_log['Date'])
+    combined_log.to_csv(combined_log_path, index=False)
+    print(f"✅ Combined trade log saved to {combined_log_path}")
 
-            # Get max date from existing log
-            max_date = existing_log['Date'].max() if not existing_log.empty else pd.Timestamp.min
-
-            # Filter new log entries to avoid duplicates
-            combined_log['Date'] = pd.to_datetime(combined_log['Date'])
-            new_entries = combined_log[combined_log['Date'] > max_date]
-
-            # Append new entries to existing log
-            updated_log = pd.concat([existing_log, new_entries]).reset_index(drop=True)
-            updated_log.to_csv(combined_log_path, index=False)
-            print(f"✅ Appended new entries to combined trade log at {combined_log_path}")
-        except Exception as e:
-            print(f"❌ Error appending to existing log: {e}")
-            # Fallback to overwriting
-            combined_log.to_csv(combined_log_path, index=False)
-            print(f"✅ Combined trade log saved to {combined_log_path}")
-    else:
-        # Otherwise just save the log
-        combined_log.to_csv(combined_log_path, index=False)
-        print(f"✅ Combined trade log saved to {combined_log_path}")
-
-    # Do the same for snapshot log
     snapshot_df = portfolio.snapshot_log_df()
-    if previous_state_loaded and os.path.exists(snapshot_log_path):
-        try:
-            existing_snapshot = pd.read_csv(snapshot_log_path)
-            existing_snapshot['Date'] = pd.to_datetime(existing_snapshot['Date'])
-
-            # Get max date from existing log
-            max_date = existing_snapshot['Date'].max() if not existing_snapshot.empty else pd.Timestamp.min
-
-            # Filter new snapshot entries
-            snapshot_df['Date'] = pd.to_datetime(snapshot_df['Date'])
-            new_entries = snapshot_df[snapshot_df['Date'] > max_date]
-
-            # Append new entries
-            updated_snapshot = pd.concat([existing_snapshot, new_entries]).reset_index(drop=True)
-            updated_snapshot.to_csv(snapshot_log_path, index=False)
-            print(f"✅ Appended new entries to snapshot log at {snapshot_log_path}")
-        except Exception as e:
-            print(f"❌ Error appending to existing snapshot log: {e}")
-            # Fallback to overwriting
-            snapshot_df.to_csv(snapshot_log_path, index=False)
-            print(f"✅ Snapshot log saved to {snapshot_log_path}")
-    else:
-        snapshot_df.to_csv(snapshot_log_path, index=False)
-        print(f"✅ Snapshot log saved to {snapshot_log_path}")
+    snapshot_df.to_csv(snapshot_log_path, index=False)
+    print(f"✅ Snapshot log saved to {snapshot_log_path}")
 
     # Generate 96-hour report (4 days)
     report_message = generate_trade_report(portfolio, hours=96)
@@ -882,7 +865,7 @@ if __name__ == "__main__":
     smtp_user = "ylzhao3377@gmail.com"
     smtp_password = "pntr minq hlcb uikz"  # Recommend using app-specific password
 
-    # Create trimmed versions of the log files (last 100 rows only)
+    # Create trimmed versions of the log files
     try:
         # For combined trade log
         trimmed_combined_log = combined_log.tail(100)  # Get last 100 rows
@@ -904,7 +887,7 @@ if __name__ == "__main__":
         print("⚠️ Using full log files for attachments due to error when trimming")
 
     # Email subject
-    pst_time_str = convert_to_pst(strategy_start_date).strftime("%Y-%m-%d %H:%M:%S %Z")
+    pst_time_str = convert_to_pst(datetime.now()).strftime("%Y-%m-%d %H:%M:%S %Z")
     subject = f"Trading Strategy Report - {pst_time_str}"
 
     # Send email with report and attachments
@@ -913,9 +896,9 @@ if __name__ == "__main__":
 
     # Clean up the trimmed files after sending email
     try:
-        if "trimmed_combined_path" in locals() and os.path.exists(trimmed_combined_path):
+        if os.path.exists(trimmed_combined_path):
             os.remove(trimmed_combined_path)
-        if "trimmed_snapshot_path" in locals() and os.path.exists(trimmed_snapshot_path):
+        if os.path.exists(trimmed_snapshot_path):
             os.remove(trimmed_snapshot_path)
         print("✅ Cleaned up temporary trimmed files")
     except Exception as e:
