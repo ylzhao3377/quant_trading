@@ -198,6 +198,9 @@ def run_trend_sell_logic(account, row, params):
             reason = "Below EMA200 or Trailing Stop triggered"
 
         if sell_shares > 0:
+            # Always sell all shares when selling (round up)
+            sell_shares = account.position
+
             # Debug log to verify entry price and calculate profit
             entry_price = account.entry_price if hasattr(account, 'entry_price') else 0
             if entry_price <= 0:
@@ -291,24 +294,36 @@ def run_range_sell_logic(account, row, params):
         sell_shares = 0
         reason = ""
 
-        # Case 1: Initial Breakout Sell - 1/3 of position
+        # Case 1: Initial Breakout Sell - round up to 1/3 of position
         if price > upper_band and breakout_strength >= min_strength and not account.breakout_sell_done:
             # Calculate 1/3 of initial position
             if account.initial_position_size == 0:  # Safeguard
                 account.initial_position_size = account.position
 
             one_third_position = int(account.initial_position_size / 3)
+            # Round up if position is small
+            if account.position <= 3:
+                one_third_position = account.position  # Sell all if 3 or fewer shares
+            elif one_third_position == 0 and account.position > 0:
+                one_third_position = 1  # Sell at least 1 share
+
             if one_third_position > 0:
                 sell_shares = min(one_third_position, account.position)
                 reason = f"Initial breakout sell (1/3 of position) - (Z={z_score:.2f}, Strength={breakout_strength:.2f})"
                 account.breakout_sell_done = True
 
-        # Case 2: Continued Uptrend Sell - 1/2 of remaining position
+        # Case 2: Continued Uptrend Sell - round up to 1/2 of remaining position
         elif price > upper_band and breakout_strength >= min_strength and account.breakout_sell_done:
             # Only trigger if price has risen significantly from last sell
             if account.last_sell_price is not None and price > account.last_sell_price * (1 + min_rise_pct):
                 # Calculate 1/2 of remaining position
                 half_remaining = int(account.position / 2)
+                # Round up if position is small
+                if account.position <= 2:
+                    half_remaining = account.position  # Sell all if 2 or fewer shares
+                elif half_remaining == 0 and account.position > 0:
+                    half_remaining = 1  # Sell at least 1 share
+
                 if half_remaining > 0:
                     sell_shares = half_remaining
                     reason = f"Continued uptrend sell (1/2 of remaining) - New high ${price:.2f}"

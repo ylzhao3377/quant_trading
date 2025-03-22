@@ -477,9 +477,9 @@ class SynchronizedPortfolio:
 
                 # Allocate funds based on total equity, stock's allocation percentage, and signal strength
                 if account.strategy_type == 'trend':
-                    funds_to_use = total_equity * (account.allocation_pct / 25) * weight
+                    funds_to_use = total_equity * (account.allocation_pct / 20) * weight
                 else:
-                    funds_to_use = total_equity * (account.allocation_pct / 80) * weight
+                    funds_to_use = total_equity * (account.allocation_pct / 60) * weight
 
                 # Ensure we don't exceed current account balance
                 funds_to_use = min(funds_to_use, pre_total_balance * weight)
